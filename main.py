@@ -55,6 +55,25 @@ def _strip_prompt_separators(s: str) -> str:
     return re.sub(r"^[\s：:，,]+", "", (s or "").strip())
 
 
+def _chunk_text(s: str, *, max_len: int = 1800) -> list[str]:
+    s = s or ""
+    if max_len <= 50:
+        return [s]
+    out: list[str] = []
+    start = 0
+    while start < len(s):
+        end = min(len(s), start + max_len)
+        out.append(s[start:end])
+        start = end
+    return out
+
+
+def _chunks_count(s: str, *, max_len: int = 1800) -> int:
+    if not s:
+        return 1
+    return max(1, (len(s) + max_len - 1) // max_len)
+
+
 @dataclass(frozen=True)
 class ComfyUIImageRef:
     filename: str
@@ -215,6 +234,70 @@ class ComfyUIWorkflowPlugin(Star):
         lines.append("备用触发：/comfyui run <命令> <提示词>")
         yield event.plain_result("\n".join(lines))
 
+    @comfyui.command("debug")
+    async def comfyui_debug(self, event: AstrMessageEvent):
+        if not bool(self.config.get("debug_enable", False)):
+            yield event.plain_result("调试模式未开启：请在插件配置中开启 debug_enable 后再使用 /comfyui debug。")
+            return
+
+        try:
+            config_obj = dict(self.config)
+        except Exception:
+            config_obj = {"__error__": "config is not dict-like"}
+
+        try:
+            workflows_raw = self.config.get("workflows")
+        except Exception:
+            workflows_raw = None
+
+        specs = self._get_workflow_specs()
+        discovered_files = []
+        try:
+            discovered_files = self._discover_workflow_api_files()
+        except Exception:
+            discovered_files = []
+
+        debug = {
+            "plugin": {
+                "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
+                "version": "0.2.0",
+                "plugin_dir": str(self._plugin_dir),
+                "plugin_data_dir": str(self._plugin_data_dir),
+            },
+            "message": {
+                "message_str": event.message_str,
+                "session_id": getattr(event, "session_id", None),
+                "unified_msg_origin": getattr(event, "unified_msg_origin", None),
+                "sender_id": (event.get_sender_id() if hasattr(event, "get_sender_id") else None),
+                "sender_name": (event.get_sender_name() if hasattr(event, "get_sender_name") else None),
+            },
+            "config": config_obj,
+            "workflows_raw": workflows_raw,
+            "workflows_specs": [
+                {
+                    "name": w.name,
+                    "command": w.command,
+                    "aliases": sorted(w.aliases),
+                    "workflow_api_file": w.workflow_api_file,
+                    "output_node_id": w.output_node_id,
+                    "prompt_input_node_id": w.prompt_input_node_id,
+                    "negative_prompt_input_node_id": w.negative_prompt_input_node_id,
+                }
+                for w in specs
+            ],
+            "runtime": {
+                "workflow_command_aliases_count": len(_WORKFLOW_COMMAND_ALIASES),
+                "workflow_command_aliases_sample": sorted(list(_WORKFLOW_COMMAND_ALIASES))[:80],
+                "discovered_workflow_files": discovered_files,
+            },
+        }
+
+        text = json.dumps(debug, ensure_ascii=False, indent=2)
+        total = _chunks_count(text)
+        for idx, chunk in enumerate(_chunk_text(text), start=1):
+            prefix = f"[DEBUG {idx}/{total}]\n" if total > 1 else ""
+            yield event.plain_result(prefix + chunk)
+
     @comfyui.command("run")
     async def comfyui_run(self, event: AstrMessageEvent, command: str | None = None, *words: str):
         cmd = _normalize_cmd(command or "")
@@ -258,7 +341,7 @@ class ComfyUIWorkflowPlugin(Star):
         suffix = "\n..." if len(files) > 30 else ""
         yield event.plain_result(f"已刷新工作流下拉选项，发现 {len(files)} 个文件：\n{shown}{suffix}\n请刷新 WebUI 配置页面。")
 
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=50)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_all_message(self, event: AstrMessageEvent):
         msg = (event.message_str or "").strip()
         if not msg.startswith("/"):
