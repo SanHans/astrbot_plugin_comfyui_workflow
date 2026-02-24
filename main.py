@@ -154,12 +154,18 @@ class ComfyUIWorkflowPlugin(Star):
             pass
 
     @filter.command("comfyui_workflow", alias=_WORKFLOW_COMMAND_ALIASES, priority=100)
-    async def comfyui_workflow_entry(self, event: AstrMessageEvent, *words: str):
+    async def comfyui_workflow_entry(self, event: AstrMessageEvent, words: str | None = None):
+        # Note: AstrBot's command arg parser may treat varargs as required.
+        # This command should be callable with no args.
+
         # Dispatch by parsing original message to know which workflow was invoked.
         msg = (event.message_str or "").strip()
         resolved = self._resolve_workflow_from_slash_message(msg)
         if resolved is None:
-            yield event.plain_result("未找到命令对应的工作流，请先执行 /comfyui help 查看可用命令。")
+            yield event.plain_result(
+                "这个指令入口用于工作流命令别名分发。\n"
+                "请使用 /comfyui help 查看可用命令，或使用备用触发：/comfyui run <命令> <提示词>"
+            )
             return
 
         workflow, user_prompt = resolved
