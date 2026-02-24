@@ -13,6 +13,12 @@
       "workflow": {
         "name": "工作流",
         "items": {
+          "id": {
+            "type": "string",
+            "description": "条目 ID",
+            "default": "",
+            "invisible": true
+          },
           "name": {
             "type": "string",
             "description": "显示名称",

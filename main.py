@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import os
 import re
@@ -129,7 +130,7 @@ class ComfyUIWorkflowPlugin(Star):
         self._images_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            self._sync_workflow_file_options_to_schema()
+            self._sync_workflow_schema()
         except Exception:
             pass
 
@@ -161,7 +162,7 @@ class ComfyUIWorkflowPlugin(Star):
     @comfyui.command("refresh")
     async def comfyui_refresh(self, event: AstrMessageEvent):
         try:
-            files = self._sync_workflow_file_options_to_schema()
+            files = self._sync_workflow_schema()
         except Exception as e:
             yield event.plain_result(f"刷新失败：{e}")
             return
@@ -346,35 +347,66 @@ class ComfyUIWorkflowPlugin(Star):
         out = sorted(set(out), key=lambda s: s.casefold())
         return out
 
-    def _sync_workflow_file_options_to_schema(self) -> list[str]:
+    def _sync_workflow_schema(self) -> list[str]:
         files = self._discover_workflow_api_files()
         schema_path = self._plugin_dir / "_conf_schema.json"
         if not schema_path.exists():
             return files
 
         schema: dict[str, Any] = json.loads(schema_path.read_text(encoding="utf-8"))
-        workflows = schema.get("workflows")
-        if not isinstance(workflows, dict):
+        workflows_meta = schema.get("workflows")
+        if not isinstance(workflows_meta, dict):
             return files
-        templates = workflows.get("templates")
+
+        templates = workflows_meta.get("templates")
         if not isinstance(templates, dict):
-            return files
-        tpl = templates.get("workflow")
-        if not isinstance(tpl, dict):
-            return files
-        items = tpl.get("items")
-        if not isinstance(items, dict):
-            return files
-        wf_file = items.get("workflow_api_file")
-        if not isinstance(wf_file, dict):
-            return files
+            templates = {}
+            workflows_meta["templates"] = templates
 
-        prev = wf_file.get("options")
-        if prev == files:
+        base_tpl = templates.get("workflow")
+        if not isinstance(base_tpl, dict):
             return files
+        base_items = base_tpl.get("items")
+        if not isinstance(base_items, dict):
+            return files
+        wf_file = base_items.get("workflow_api_file")
+        if isinstance(wf_file, dict):
+            wf_file["options"] = files
 
-        wf_file["options"] = files
+        cfg_changed = False
+        cfg_workflows = self.config.get("workflows")
+        if isinstance(cfg_workflows, list):
+            for entry in cfg_workflows:
+                if not isinstance(entry, dict):
+                    continue
+
+                entry_id = str(entry.get("id") or "").strip()
+                if not entry_id:
+                    entry_id = uuid.uuid4().hex
+                    entry["id"] = entry_id
+                    cfg_changed = True
+
+                entry_name = str(entry.get("name") or "").strip() or "工作流"
+                template_key = f"workflow_{entry_id}"
+                if entry.get("__template_key") != template_key:
+                    entry["__template_key"] = template_key
+                    cfg_changed = True
+
+                tpl_meta = copy.deepcopy(base_tpl)
+                tpl_meta["name"] = entry_name
+                tpl_meta["hint"] = "已添加的工作流条目（用于显示标题）"
+                templates[template_key] = tpl_meta
+
         schema_path.write_text(json.dumps(schema, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+        if cfg_changed:
+            save = getattr(self.config, "save_config", None)
+            if callable(save):
+                try:
+                    save()
+                except Exception:
+                    pass
+
         return files
 
     def _load_workflow_api_json(self, workflow_api_file: str) -> dict[str, Any]:

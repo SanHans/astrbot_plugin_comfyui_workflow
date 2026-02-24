@@ -10,7 +10,7 @@
 管理指令：
 
 - `/comfyui help`：查看当前可用命令
-- `/comfyui refresh`：刷新配置页里的工作流文件下拉选项
+- `/comfyui refresh`：刷新配置页里的工作流文件下拉选项，并同步折叠标题
 
 ## WebUI 配置
 
