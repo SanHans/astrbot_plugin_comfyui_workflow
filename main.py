@@ -811,15 +811,16 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result(f"工作流『{workflow.name}』未选择 workflow_api_file，请先在插件配置里选择工作流文件。")
             return
 
-        if not workflow.output_node_id:
-            yield event.plain_result(f"工作流『{workflow.name}』未填写 output_node_id，请先在插件配置里填写输出节点 ID（通常是 SaveImage 节点）。")
-            return
+        # output_node_id is optional; if empty, we'll auto-pick first images output.
 
         try:
             workflow_json = self._load_workflow_api_json(workflow.workflow_api_file)
         except Exception as e:
             yield event.plain_result(f"读取工作流文件失败：{e}")
             return
+
+        # Auto-detect conditioning nodes from KSampler graph when needed.
+        auto_pos_clip_id, auto_neg_clip_id = self._auto_detect_cliptextencode_ids(workflow_json)
 
         if workflow.seed_randomize:
             # Use default ComfyUI-style seed range.
@@ -850,11 +851,14 @@ class ComfyUIWorkflowPlugin(Star):
                     )
                     return
 
-        if prompt is not None and workflow.prompt_input_node_id:
+        if prompt is not None and (workflow.prompt_input_node_id or auto_pos_clip_id):
             try:
+                pos_target = workflow.prompt_input_node_id or auto_pos_clip_id
+                if not pos_target:
+                    raise RuntimeError("未找到正向 CLIPTextEncode 节点")
                 self._set_workflow_input(
                     workflow_json,
-                    node_id=workflow.prompt_input_node_id,
+                    node_id=pos_target,
                     field="text",
                     value=prompt,
                 )
@@ -862,15 +866,29 @@ class ComfyUIWorkflowPlugin(Star):
                 yield event.plain_result(f"写入提示词失败，请检查节点 ID/字段。错误：{e}")
                 return
 
-        if workflow.negative_prompt_input_node_id and workflow.default_negative_prompt:
+        if workflow.default_negative_prompt and (workflow.negative_prompt_input_node_id or auto_neg_clip_id):
             try:
+                neg_target = workflow.negative_prompt_input_node_id or auto_neg_clip_id
+                if not neg_target:
+                    raise RuntimeError("未找到负面 CLIPTextEncode 节点")
                 existing = self._get_workflow_input(
                     workflow_json,
-                    node_id=workflow.negative_prompt_input_node_id,
+                    node_id=neg_target,
                     field="text",
                 )
+                if isinstance(existing, list):
+                    yield event.plain_result(
+                        "该工作流的负面提示词来自上游节点连接（不是直接文本）。\n"
+                        "目前无法自动与默认负面提示词拼接，请在配置里填写 negative_prompt_input_node_id 指向可编辑的 CLIPTextEncode 负面节点。"
+                    )
+                    return
                 merged = self._merge_prompt_text(existing, workflow.default_negative_prompt)
-                self._set_workflow_input(workflow_json, node_id=workflow.negative_prompt_input_node_id, field="text", value=merged)
+                self._set_workflow_input(
+                    workflow_json,
+                    node_id=neg_target,
+                    field="text",
+                    value=merged,
+                )
             except Exception as e:
                 yield event.plain_result(f"写入负面提示词失败，请检查节点 ID/字段。错误：{e}")
                 return
@@ -1030,7 +1048,7 @@ class ComfyUIWorkflowPlugin(Star):
         *,
         client: ComfyUIClient,
         prompt_id: str,
-        output_node_id: str,
+        output_node_id: str | None,
         image_index: int,
         poll_interval_sec: float,
         timeout_sec: int,
@@ -1044,25 +1062,38 @@ class ComfyUIWorkflowPlugin(Star):
             if isinstance(prompt_hist, dict):
                 outputs = prompt_hist.get("outputs")
                 if isinstance(outputs, dict):
-                    out = outputs.get(str(output_node_id))
-                    if isinstance(out, dict):
-                        images = out.get("images")
-                        if isinstance(images, list) and images:
-                            idx = max(0, image_index)
-                            if idx < len(images) and isinstance(images[idx], dict):
-                                img = images[idx]
-                                filename = img.get("filename")
-                                if filename:
-                                    return ComfyUIImageRef(
-                                        filename=str(filename),
-                                        subfolder=img.get("subfolder") or None,
-                                        type=img.get("type") or None,
-                                    )
-                            last_err = f"输出图片序号无效：{image_index}"
-                        else:
-                            last_err = "输出节点暂未产出图片"
+                    candidate_ids: list[str] = []
+                    if output_node_id:
+                        candidate_ids = [str(output_node_id)]
                     else:
-                        last_err = f"输出节点尚未就绪：{output_node_id}"
+                        candidate_ids = [str(k) for k in outputs.keys()]
+
+                    found_any_images = False
+                    for cid in candidate_ids:
+                        out = outputs.get(cid)
+                        if not isinstance(out, dict):
+                            continue
+                        images = out.get("images")
+                        if not (isinstance(images, list) and images):
+                            continue
+                        found_any_images = True
+                        idx = max(0, image_index)
+                        if idx >= len(images) or not isinstance(images[idx], dict):
+                            last_err = f"输出图片序号无效：{image_index}"
+                            continue
+                        img = images[idx]
+                        filename = img.get("filename")
+                        if filename:
+                            return ComfyUIImageRef(
+                                filename=str(filename),
+                                subfolder=img.get("subfolder") or None,
+                                type=img.get("type") or None,
+                            )
+
+                    if output_node_id and not found_any_images:
+                        last_err = f"输出节点尚未就绪或无图片输出：{output_node_id}"
+                    elif not output_node_id:
+                        last_err = "未检测到任何图片输出节点"
                 else:
                     last_err = "工作流输出尚未就绪"
             else:
@@ -1071,6 +1102,46 @@ class ComfyUIWorkflowPlugin(Star):
             await asyncio.sleep(max(0.2, poll_interval_sec))
 
         raise TimeoutError(last_err or "任务超时")
+
+    @staticmethod
+    def _auto_detect_cliptextencode_ids(workflow: dict[str, Any]) -> tuple[str | None, str | None]:
+        """Best-effort: find positive/negative CLIPTextEncode node ids referenced by KSampler nodes."""
+        if not isinstance(workflow, dict):
+            return None, None
+
+        pos_counts: dict[str, int] = {}
+        neg_counts: dict[str, int] = {}
+
+        for nid, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            class_type = str(node.get("class_type") or "")
+            if "ksampler" not in class_type.casefold():
+                continue
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+
+            for key, counts in (("positive", pos_counts), ("negative", neg_counts)):
+                v = inputs.get(key)
+                if isinstance(v, list) and len(v) >= 1:
+                    ref = str(v[0])
+                    counts[ref] = counts.get(ref, 0) + 1
+
+        def pick_best(counts: dict[str, int]) -> str | None:
+            if not counts:
+                return None
+            # Prefer a referenced node that is actually CLIPTextEncode
+            for ref, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+                n = workflow.get(ref)
+                if isinstance(n, dict):
+                    ct = str(n.get("class_type") or "")
+                    if "cliptextencode" in ct.casefold():
+                        return ref
+            # Fallback to most referenced
+            return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+        return pick_best(pos_counts), pick_best(neg_counts)
 
     def _write_image(self, img_bytes: bytes) -> Path:
         name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
