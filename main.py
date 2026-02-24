@@ -764,23 +764,35 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result(f"读取工作流文件失败：{e}")
             return
 
-        if workflow.seed_randomize and workflow.seed_input_node_id:
+        if workflow.seed_randomize:
             seed_min = int(workflow.seed_random_min)
             seed_max = int(workflow.seed_random_max)
             if seed_min > seed_max:
                 seed_min, seed_max = seed_max, seed_min
             seed_span = max(0, seed_max - seed_min)
             seed = seed_min + secrets.randbelow(seed_span + 1)
-            try:
-                self._set_workflow_input(
-                    workflow_json,
-                    node_id=workflow.seed_input_node_id,
-                    field=workflow.seed_input_field,
-                    value=int(seed),
+
+            seed_targets: list[tuple[str, str]] = []
+            if workflow.seed_input_node_id:
+                seed_targets = [(workflow.seed_input_node_id, workflow.seed_input_field)]
+            else:
+                seed_targets = self._auto_detect_seed_targets(workflow_json, default_field=workflow.seed_input_field)
+
+            if not seed_targets:
+                yield event.plain_result(
+                    "已开启‘每次随机种子’，但未找到可写入 seed 的节点。\n"
+                    "请在该工作流配置里填写 seed_input_node_id（通常为 KSampler 节点 ID）。"
                 )
-            except Exception as e:
-                yield event.plain_result(f"写入随机 seed 失败，请检查 seed_input_node_id / seed_input_field。错误：{e}")
                 return
+
+            for node_id, field in seed_targets:
+                try:
+                    self._set_workflow_input(workflow_json, node_id=node_id, field=field, value=int(seed))
+                except Exception as e:
+                    yield event.plain_result(
+                        f"写入随机 seed 失败：node_id={node_id} field={field}。请检查节点 ID/字段。错误：{e}"
+                    )
+                    return
 
         if prompt is not None and workflow.prompt_input_node_id:
             try:
@@ -839,6 +851,74 @@ class ComfyUIWorkflowPlugin(Star):
         if not isinstance(inputs, dict):
             raise KeyError(f"节点 {node_id} 不包含 inputs 字段")
         inputs[field] = value
+
+    @staticmethod
+    def _auto_detect_seed_targets(workflow: dict[str, Any], *, default_field: str = "seed") -> list[tuple[str, str]]:
+        """Try to find nodes that accept a seed input.
+
+        Prefer nodes whose class_type looks like KSampler; otherwise fall back to any node with a seed-like input.
+        Returns a list to support workflows with multiple samplers.
+        """
+        if not isinstance(workflow, dict):
+            return []
+
+        preferred: list[tuple[str, str]] = []
+        fallback: list[tuple[str, str]] = []
+
+        for node_id, node in workflow.items():
+            if not isinstance(node_id, str):
+                continue
+            if not isinstance(node, dict):
+                continue
+
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+
+            class_type = str(node.get("class_type") or "")
+            class_cf = class_type.casefold()
+
+            if default_field in inputs:
+                target = (str(node_id), str(default_field))
+                if "ksampler" in class_cf:
+                    preferred.append(target)
+                else:
+                    fallback.append(target)
+                continue
+
+            # Some nodes use variations like 'noise_seed'
+            for k in ("seed", "noise_seed"):
+                if k in inputs:
+                    target = (str(node_id), str(k))
+                    if "ksampler" in class_cf:
+                        preferred.append(target)
+                    else:
+                        fallback.append(target)
+                    break
+
+        # If multiple KSamplers exist, randomize them all.
+        if preferred:
+            # De-dup while preserving order
+            seen = set()
+            out: list[tuple[str, str]] = []
+            for t in preferred:
+                if t in seen:
+                    continue
+                seen.add(t)
+                out.append(t)
+            return out
+
+        if fallback:
+            seen = set()
+            out: list[tuple[str, str]] = []
+            for t in fallback:
+                if t in seen:
+                    continue
+                seen.add(t)
+                out.append(t)
+            return out
+
+        return []
 
     async def _wait_for_output_image(
         self,

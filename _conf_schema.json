@@ -91,7 +91,7 @@
           "seed_input_node_id": {
             "type": "string",
             "description": "Seed 输入节点 ID（可选）",
-            "hint": "通常是 KSampler 节点 ID。配合‘每次随机种子’使用。",
+            "hint": "通常是 KSampler 节点 ID。留空则尝试自动寻找工作流中的 KSampler/含 seed 字段的节点。",
             "default": ""
           },
           "seed_input_field": {
