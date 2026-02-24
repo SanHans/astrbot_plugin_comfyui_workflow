@@ -705,6 +705,7 @@ class ComfyUIWorkflowPlugin(Star):
 
         cfg_changed = False
         cfg_workflows = self.config.get("workflows")
+        keep_template_keys: set[str] = {"workflow"}
         if isinstance(cfg_workflows, list):
             for entry in cfg_workflows:
                 if not isinstance(entry, dict):
@@ -717,15 +718,34 @@ class ComfyUIWorkflowPlugin(Star):
                     cfg_changed = True
 
                 entry_name = str(entry.get("name") or "").strip() or "工作流"
-                template_key = f"workflow_{entry_id}"
-                if entry.get("__template_key") != template_key:
+
+                # Keep existing template key to avoid breaking UI state.
+                template_key = str(entry.get("__template_key") or "").strip()
+                if not template_key:
+                    template_key = f"workflow_{entry_id}"
                     entry["__template_key"] = template_key
                     cfg_changed = True
 
-                tpl_meta = copy.deepcopy(base_tpl)
-                tpl_meta["name"] = entry_name
-                tpl_meta["hint"] = "已添加的工作流条目（用于显示标题）"
-                templates[template_key] = tpl_meta
+                keep_template_keys.add(template_key)
+
+                # Create/update the per-entry template so the collapse title shows entry_name.
+                if template_key != "workflow":
+                    tpl_meta = copy.deepcopy(base_tpl)
+                    tpl_meta["name"] = entry_name
+                    tpl_meta["hint"] = "已添加的工作流条目（用于显示标题）"
+                    templates[template_key] = tpl_meta
+
+        # Prune stale templates left by deleted entries.
+        stale_keys = [
+            k
+            for k in list(templates.keys())
+            if isinstance(k, str) and k.startswith("workflow_") and k not in keep_template_keys
+        ]
+        for k in stale_keys:
+            try:
+                del templates[k]
+            except Exception:
+                pass
 
         schema_path.write_text(json.dumps(schema, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
 
