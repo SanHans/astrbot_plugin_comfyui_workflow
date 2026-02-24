@@ -49,6 +49,10 @@ def _is_safe_relpath(relpath: str) -> bool:
     return True
 
 
+def _strip_prompt_separators(s: str) -> str:
+    return re.sub(r"^[\s：:，,]+", "", (s or "").strip())
+
+
 @dataclass(frozen=True)
 class ComfyUIImageRef:
     filename: str
@@ -157,7 +161,35 @@ class ComfyUIWorkflowPlugin(Star):
             alias_text = f"（别名：{', '.join(aliases)}）" if aliases else ""
             lines.append(f"- /{w.command} {alias_text}".rstrip())
         lines.append("\n管理指令：/comfyui refresh")
+        lines.append("备用触发：/comfyui run <命令> <提示词>")
         yield event.plain_result("\n".join(lines))
+
+    @comfyui.command("run")
+    async def comfyui_run(self, event: AstrMessageEvent, command: str | None = None, *words: str):
+        cmd = _normalize_cmd(command or "")
+        if not cmd:
+            yield event.plain_result("用法：/comfyui run <命令> <提示词>\n示例：/comfyui run 画图 一只戴墨镜的橘猫")
+            return
+
+        workflow = self._find_workflow_by_command(cmd)
+        if workflow is None:
+            yield event.plain_result(f"未找到命令对应的工作流：{command}")
+            return
+
+        user_prompt = " ".join(words).strip()
+        prompt: str | None
+        if workflow.fixed_prompt:
+            prompt = workflow.fixed_prompt
+        else:
+            prompt = user_prompt or None
+
+        if workflow.require_prompt and not prompt:
+            yield event.plain_result(f"用法：/{workflow.command} 你的描述")
+            return
+
+        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
+        async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
+            yield result
 
     @comfyui.command("refresh")
     async def comfyui_refresh(self, event: AstrMessageEvent):
@@ -179,18 +211,13 @@ class ComfyUIWorkflowPlugin(Star):
         if not msg.startswith("/"):
             return
 
-        parts = msg[1:].split()
-        if not parts:
+        resolved = self._resolve_workflow_from_slash_message(msg)
+        if resolved is None:
             return
 
-        cmd = _normalize_cmd(parts[0])
-        workflow = self._find_workflow_by_command(cmd)
-        if workflow is None:
-            return
-
+        workflow, user_prompt = resolved
         event.stop_event()
 
-        user_prompt = " ".join(parts[1:]).strip()
         prompt: str | None
         if workflow.fixed_prompt:
             prompt = workflow.fixed_prompt
@@ -317,6 +344,45 @@ class ComfyUIWorkflowPlugin(Star):
                 )
             )
         return out
+
+    def _resolve_workflow_from_slash_message(self, msg: str) -> tuple[WorkflowSpec, str] | None:
+        if not msg.startswith("/"):
+            return None
+        rest = msg[1:].lstrip()
+        if not rest:
+            return None
+
+        workflows = self._get_workflow_specs()
+        if not workflows:
+            return None
+
+        # First try: whitespace-delimited command
+        parts = rest.split(maxsplit=1)
+        cmd = _normalize_cmd(parts[0])
+        wf = self._find_workflow_by_command(cmd)
+        if wf is not None:
+            prompt = _strip_prompt_separators(parts[1] if len(parts) > 1 else "")
+            return wf, prompt
+
+        # Second try: allow no-space usage like /画图xxx or /画图：xxx
+        # Prefer longest match to avoid prefix collisions.
+        alias_pairs: list[tuple[str, WorkflowSpec]] = []
+        for w in workflows:
+            for a in w.aliases:
+                alias_pairs.append((a, w))
+        alias_pairs.sort(key=lambda x: len(x[0]), reverse=True)
+
+        rest_cf = rest.casefold()
+        for alias, w in alias_pairs:
+            if not alias:
+                continue
+            if not rest_cf.startswith(alias):
+                continue
+            remainder = rest[len(alias) :]
+            prompt = _strip_prompt_separators(remainder)
+            return w, prompt
+
+        return None
 
     def _find_workflow_by_command(self, cmd: str) -> WorkflowSpec | None:
         cmd_norm = _normalize_cmd(cmd)
