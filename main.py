@@ -56,6 +56,13 @@ def _strip_prompt_separators(s: str) -> str:
     return re.sub(r"^[\s：:，,]+", "", (s or "").strip())
 
 
+_SEP_CHARS = " \t\r\n：:，,"
+
+
+def _starts_with_sep(s: str) -> bool:
+    return bool(s) and s[0] in _SEP_CHARS
+
+
 def _is_command_prefix(s: str) -> bool:
     if not s:
         return False
@@ -378,10 +385,7 @@ class ComfyUIWorkflowPlugin(Star):
                 }
             )
 
-        if not _is_command_prefix(msg):
-            return
-
-        resolved = self._resolve_workflow_from_slash_message(msg)
+        resolved = self._resolve_workflow_from_message(msg)
         if resolved is None:
             return
 
@@ -511,10 +515,16 @@ class ComfyUIWorkflowPlugin(Star):
             )
         return out
 
-    def _resolve_workflow_from_slash_message(self, msg: str) -> tuple[WorkflowSpec, str] | None:
-        if not _is_command_prefix(msg):
+    def _resolve_workflow_from_message(self, msg: str) -> tuple[WorkflowSpec, str] | None:
+        # Supports:
+        # - /<cmd> <prompt>
+        # - ／<cmd> <prompt>
+        # - <cmd> <prompt>     (for platforms that strip leading slash)
+        if not msg:
             return None
-        rest = _strip_command_prefix(msg).lstrip()
+
+        is_prefixed = _is_command_prefix(msg)
+        rest = _strip_command_prefix(msg).lstrip() if is_prefixed else msg
         if not rest:
             return None
 
@@ -545,6 +555,15 @@ class ComfyUIWorkflowPlugin(Star):
             if not rest_cf.startswith(alias):
                 continue
             remainder = rest[len(alias) :]
+
+            # If message is not explicitly prefixed, only accept formats like:
+            #   随机
+            #   随机 <prompt>
+            #   随机：<prompt>
+            # Avoid hijacking normal chat like "随机给我来一张".
+            if not is_prefixed and remainder and not _starts_with_sep(remainder):
+                continue
+
             prompt = _strip_prompt_separators(remainder)
             return w, prompt
 
