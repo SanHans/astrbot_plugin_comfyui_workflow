@@ -29,7 +29,8 @@
 不要在配置页粘贴工作流 JSON。
 
 1) 在 ComfyUI 中点击 Save -> API Format，导出 `.json` 文件
-2) 把导出的 `.json` 放到插件目录下，或放到 `workflows/` 子目录下
+2) 推荐把导出的 `.json` 放到插件持久化目录：`data/plugin_data/astrbot_plugin_comfyui_workflow/workflows/`（更新插件不会丢）
+   - 也兼容放到插件目录或插件目录的 `workflows/`，但更新插件可能会被覆盖/丢失
 3) 在插件配置里新增一条或多条 `工作流` 配置，选择 `workflow_api_file` 并配置节点 ID 与命令
 
 必填（最小可用配置）：

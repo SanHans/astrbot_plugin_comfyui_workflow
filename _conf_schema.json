@@ -149,6 +149,12 @@
     "hint": "开启后仅当消息以 / 或 ／ 开头时触发工作流命令。注意：部分前端（如 WebChat）可能会把你输入的 '/随机' 传给插件时变成 '随机'（去掉斜杠），此时需要前端支持保留斜杠，或改用 //随机。",
     "default": false
   },
+  "reply_at_sender": {
+    "type": "bool",
+    "description": "群聊回复 @ 请求人",
+    "hint": "开启后在群聊返回图片时会 @ 触发者（仅在平台支持且 sender_id 为数字时生效）。",
+    "default": true
+  },
   "job_timeout_sec": {
     "type": "int",
     "description": "任务超时（秒）",

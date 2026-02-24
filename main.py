@@ -219,7 +219,9 @@ class ComfyUIWorkflowPlugin(Star):
         data_root = _find_astrbot_data_dir_from_file(Path(__file__))
         self._plugin_data_dir = data_root / "plugin_data" / plugin_name
         self._images_dir = self._plugin_data_dir / "images"
+        self._workflows_dir = self._plugin_data_dir / "workflows"
         self._images_dir.mkdir(parents=True, exist_ok=True)
+        self._workflows_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             self._sync_workflow_schema()
@@ -649,24 +651,31 @@ class ComfyUIWorkflowPlugin(Star):
         return None
 
     def _discover_workflow_api_files(self) -> list[str]:
-        candidates: list[Path] = []
-        candidates.extend(self._plugin_dir.glob("*.json"))
-        candidates.extend((self._plugin_dir / "workflows").glob("*.json"))
+        # Prefer persisted directory first to survive plugin updates.
+        search_dirs: list[Path] = [
+            self._workflows_dir,
+            self._plugin_dir / "workflows",
+            self._plugin_dir,
+        ]
 
         out: list[str] = []
-        for p in candidates:
-            if not p.is_file():
+        seen: set[str] = set()
+        for d in search_dirs:
+            if not d.exists() or not d.is_dir():
                 continue
-            if p.name in {"_conf_schema.json"}:
-                continue
-            try:
-                rel = p.relative_to(self._plugin_dir)
-            except ValueError:
-                continue
-            out.append(rel.as_posix())
+            for p in d.glob("*.json"):
+                if not p.is_file():
+                    continue
+                if p.name in {"_conf_schema.json"}:
+                    continue
+                name = p.name
+                key = name.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(name)
 
-        out = sorted(set(out), key=lambda s: s.casefold())
-        return out
+        return sorted(out, key=lambda s: s.casefold())
 
     def _sync_workflow_schema(self) -> list[str]:
         files = self._discover_workflow_api_files()
@@ -731,14 +740,24 @@ class ComfyUIWorkflowPlugin(Star):
         return files
 
     def _load_workflow_api_json(self, workflow_api_file: str) -> dict[str, Any]:
-        rel = workflow_api_file.strip()
+        rel = (workflow_api_file or "").strip()
+        if not rel:
+            raise ValueError("工作流文件名为空")
         if not _is_safe_relpath(rel):
             raise ValueError(f"工作流文件路径不安全：{workflow_api_file}")
-        path = (self._plugin_dir / rel).resolve()
-        if self._plugin_dir not in path.parents and path != self._plugin_dir:
-            raise ValueError(f"工作流文件不在插件目录内：{workflow_api_file}")
-        if not path.exists() or not path.is_file():
-            raise FileNotFoundError(f"未找到工作流文件：{workflow_api_file}")
+
+        # Allow selecting plain filenames; search persisted dir first.
+        candidates = [
+            (self._workflows_dir / rel),
+            (self._plugin_dir / "workflows" / rel),
+            (self._plugin_dir / rel),
+        ]
+        path = next((p for p in candidates if p.exists() and p.is_file()), None)
+        if path is None:
+            raise FileNotFoundError(
+                f"未找到工作流文件：{workflow_api_file}（已搜索：{', '.join(str(p) for p in candidates)}）"
+            )
+
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"工作流文件不是有效的 API JSON 对象：{workflow_api_file}")
@@ -840,7 +859,35 @@ class ComfyUIWorkflowPlugin(Star):
 
         out_path = self._write_image(img_bytes)
         self._gc_images(keep_last_n=int(self.config.get("save_last_n", 30)))
+        if self._should_at_sender(event):
+            sent = False
+            try:
+                from astrbot.api.message_components import At, Image
+
+                sender_id = str(event.get_sender_id()) if hasattr(event, "get_sender_id") else ""
+                if sender_id.isdigit():
+                    chain = [At(qq=int(sender_id)), Image.fromFileSystem(str(out_path))]
+                else:
+                    chain = [Image.fromFileSystem(str(out_path))]
+                yield event.chain_result(chain)
+                sent = True
+            except Exception:
+                sent = False
+
+            if sent:
+                return
+
         yield event.image_result(str(out_path))
+
+    def _should_at_sender(self, event: AstrMessageEvent) -> bool:
+        if not bool(self.config.get("reply_at_sender", True)):
+            return False
+        try:
+            msg_obj = getattr(event, "message_obj", None)
+            group_id = getattr(msg_obj, "group_id", "") if msg_obj is not None else ""
+            return bool(group_id)
+        except Exception:
+            return False
 
     @staticmethod
     def _set_workflow_input(workflow: dict[str, Any], *, node_id: str, field: str, value: Any) -> None:
@@ -896,29 +943,19 @@ class ComfyUIWorkflowPlugin(Star):
                         fallback.append(target)
                     break
 
-        # If multiple KSamplers exist, randomize them all.
-        if preferred:
-            # De-dup while preserving order
-            seen = set()
-            out: list[tuple[str, str]] = []
-            for t in preferred:
-                if t in seen:
-                    continue
-                seen.add(t)
-                out.append(t)
-            return out
+        # Apply to all seed-like nodes (KSampler first), so random text nodes also change.
+        combined = preferred + fallback
+        if not combined:
+            return []
 
-        if fallback:
-            seen = set()
-            out: list[tuple[str, str]] = []
-            for t in fallback:
-                if t in seen:
-                    continue
-                seen.add(t)
-                out.append(t)
-            return out
-
-        return []
+        seen = set()
+        out: list[tuple[str, str]] = []
+        for t in combined:
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+        return out
 
     async def _wait_for_output_image(
         self,
