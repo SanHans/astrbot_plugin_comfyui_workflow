@@ -1,0 +1,114 @@
+{
+  "comfyui_base_url": {
+    "type": "string",
+    "description": "ComfyUI base URL",
+    "hint": "Example: http://127.0.0.1:8188",
+    "default": "http://127.0.0.1:8188"
+  },
+  "workflow_api_json": {
+    "type": "text",
+    "description": "ComfyUI workflow (API format JSON)",
+    "hint": "In ComfyUI: Save -> API Format. Paste the whole JSON here.",
+    "default": "{}",
+    "editor_mode": true,
+    "editor_language": "json"
+  },
+  "random_workflow_api_json": {
+    "type": "text",
+    "description": "Workflow used by /随机图 (optional)",
+    "hint": "Leave empty to reuse workflow_api_json.",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "json"
+  },
+  "prompt_input_node_id": {
+    "type": "string",
+    "description": "Positive prompt input node id",
+    "hint": "The node id that receives your prompt text (as string).",
+    "default": ""
+  },
+  "prompt_input_field": {
+    "type": "string",
+    "description": "Positive prompt input field",
+    "hint": "Usually: text",
+    "default": "text"
+  },
+  "negative_prompt_input_node_id": {
+    "type": "string",
+    "description": "Negative prompt input node id (optional)",
+    "hint": "Leave empty to disable.",
+    "default": ""
+  },
+  "negative_prompt_input_field": {
+    "type": "string",
+    "description": "Negative prompt input field",
+    "default": "text"
+  },
+  "default_negative_prompt": {
+    "type": "string",
+    "description": "Default negative prompt",
+    "default": ""
+  },
+  "output_node_id": {
+    "type": "string",
+    "description": "Output node id (images)",
+    "hint": "The node id that contains the final image output.",
+    "default": ""
+  },
+  "random_output_node_id": {
+    "type": "string",
+    "description": "Output node id for /随机图 (optional)",
+    "hint": "Leave empty to reuse output_node_id.",
+    "default": ""
+  },
+  "output_image_index": {
+    "type": "int",
+    "description": "Output image index",
+    "hint": "Which image to pick from the output list.",
+    "default": 0
+  },
+  "random_output_image_index": {
+    "type": "int",
+    "description": "Output image index for /随机图 (optional)",
+    "hint": "Leave as -1 to reuse output_image_index.",
+    "default": -1
+  },
+  "random_prompt": {
+    "type": "string",
+    "description": "Prompt used by /随机图",
+    "hint": "Leave empty to keep workflow defaults.",
+    "default": ""
+  },
+  "poll_interval_sec": {
+    "type": "float",
+    "description": "Polling interval (seconds)",
+    "default": 1.0
+  },
+  "job_timeout_sec": {
+    "type": "int",
+    "description": "Job timeout (seconds)",
+    "default": 180
+  },
+  "save_last_n": {
+    "type": "int",
+    "description": "Keep last N images",
+    "hint": "Older images will be deleted from data/plugin_data/...",
+    "default": 30
+  },
+  "enable_nlp_draw": {
+    "type": "bool",
+    "description": "Enable trigger: '帮我画xxx'",
+    "default": true
+  },
+  "nlp_draw_prefixes": {
+    "type": "list",
+    "description": "NLP trigger prefixes",
+    "hint": "Message starts with one of these prefixes.",
+    "default": ["帮我画", "给我画", "帮我生成", "画一张"]
+  },
+  "llm_prompt_instruction": {
+    "type": "text",
+    "description": "LLM instruction for prompt writing",
+    "default": "You are a Stable Diffusion / ComfyUI prompt engineer. Convert the user's request into a concise, high-quality positive prompt (English preferred). Output ONLY the positive prompt, one line, no quotes, no markdown."
+  }
+}
