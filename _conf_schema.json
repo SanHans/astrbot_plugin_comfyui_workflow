@@ -5,79 +5,98 @@
     "hint": "例如：http://127.0.0.1:8188",
     "default": "http://127.0.0.1:8188"
   },
-  "workflow_api_json": {
-    "type": "text",
-    "description": "主工作流（API 格式 JSON）",
-    "hint": "在 ComfyUI 中点击 Save -> API Format，把完整 JSON 粘贴到这里。",
-    "default": "{}",
-    "editor_mode": true,
-    "editor_language": "json"
+  "workflows": {
+    "type": "template_list",
+    "description": "工作流/节点/命令",
+    "hint": "把 ComfyUI 导出的 API format JSON 文件放到插件目录或 workflows/ 目录；然后在这里选择文件，并为每个工作流配置节点 ID 与触发命令。新增文件后可重载插件或用 /comfyui refresh 刷新下拉选项。",
+    "templates": {
+      "workflow": {
+        "name": "工作流",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "显示名称",
+            "default": "主工作流"
+          },
+          "command": {
+            "type": "string",
+            "description": "触发命令",
+            "hint": "用户使用 /<命令> 来触发。例如：画图、随机图。不要带 /。",
+            "default": "画图"
+          },
+          "aliases": {
+            "type": "list",
+            "description": "命令别名",
+            "hint": "例如：[\"draw\", \"画\"]",
+            "default": []
+          },
+          "workflow_api_file": {
+            "type": "string",
+            "description": "工作流文件（API JSON）",
+            "hint": "下拉列表来自插件目录与 workflows/ 目录中的 .json 文件。",
+            "default": "",
+            "options": []
+          },
+          "require_prompt": {
+            "type": "bool",
+            "description": "是否需要提示词参数",
+            "hint": "关闭后允许用户仅输入 /<命令>，使用工作流内默认提示词。",
+            "default": true
+          },
+          "fixed_prompt": {
+            "type": "string",
+            "description": "固定提示词（可选）",
+            "hint": "填写后将忽略用户输入参数，始终使用此提示词。",
+            "default": ""
+          },
+          "prompt_input_node_id": {
+            "type": "string",
+            "description": "正向提示词输入节点 ID（可选）",
+            "hint": "接收画图描述文本的节点 ID（通常是 CLIPTextEncode 正向节点）。留空则不写入提示词。",
+            "default": ""
+          },
+          "prompt_input_field": {
+            "type": "string",
+            "description": "正向提示词输入字段",
+            "hint": "通常填写 text。",
+            "default": "text"
+          },
+          "negative_prompt_input_node_id": {
+            "type": "string",
+            "description": "负面提示词输入节点 ID（可选）",
+            "default": ""
+          },
+          "negative_prompt_input_field": {
+            "type": "string",
+            "description": "负面提示词输入字段",
+            "default": "text"
+          },
+          "default_negative_prompt": {
+            "type": "string",
+            "description": "默认负面提示词（可选）",
+            "default": ""
+          },
+          "output_node_id": {
+            "type": "string",
+            "description": "输出图片节点 ID",
+            "hint": "最终产出图片的节点 ID（通常是 SaveImage 节点）。",
+            "default": ""
+          },
+          "output_image_index": {
+            "type": "int",
+            "description": "输出图片序号",
+            "hint": "当一个节点输出多张图时，选择第几张（从 0 开始）。",
+            "default": 0
+          }
+        }
+      }
+    }
   },
-  "random_workflow_api_json": {
-    "type": "text",
-    "description": "随机图专用工作流（可选）",
-    "hint": "留空则复用主工作流。",
-    "default": "",
-    "editor_mode": true,
-    "editor_language": "json"
-  },
-  "prompt_input_node_id": {
+  "nlp_target_command": {
     "type": "string",
-    "description": "正向提示词输入节点 ID",
-    "hint": "接收画图描述文本的节点 ID（通常是 CLIPTextEncode 正向节点）。",
-    "default": ""
-  },
-  "prompt_input_field": {
-    "type": "string",
-    "description": "正向提示词输入字段",
-    "hint": "通常填写 text。",
-    "default": "text"
-  },
-  "negative_prompt_input_node_id": {
-    "type": "string",
-    "description": "负面提示词输入节点 ID（可选）",
-    "hint": "留空则不写入负面提示词。",
-    "default": ""
-  },
-  "negative_prompt_input_field": {
-    "type": "string",
-    "description": "负面提示词输入字段",
-    "default": "text"
-  },
-  "default_negative_prompt": {
-    "type": "string",
-    "description": "默认负面提示词",
-    "default": ""
-  },
-  "output_node_id": {
-    "type": "string",
-    "description": "输出图片节点 ID",
-    "hint": "最终产出图片的节点 ID（通常是 SaveImage 节点）。",
-    "default": ""
-  },
-  "random_output_node_id": {
-    "type": "string",
-    "description": "随机图输出节点 ID（可选）",
-    "hint": "留空则复用 output_node_id。",
-    "default": ""
-  },
-  "output_image_index": {
-    "type": "int",
-    "description": "输出图片序号",
-    "hint": "当一个节点输出多张图时，选择第几张（从 0 开始）。",
-    "default": 0
-  },
-  "random_output_image_index": {
-    "type": "int",
-    "description": "随机图输出图片序号（可选）",
-    "hint": "设为 -1 表示复用 output_image_index。",
-    "default": -1
-  },
-  "random_prompt": {
-    "type": "string",
-    "description": "随机图提示词",
-    "hint": "留空则使用工作流中的默认值。",
-    "default": ""
+    "description": "自然语言触发使用的命令",
+    "hint": "群聊触发（如：帮我画xxx）时，实际调用哪个 /<命令>。",
+    "default": "画图"
   },
   "poll_interval_sec": {
     "type": "float",

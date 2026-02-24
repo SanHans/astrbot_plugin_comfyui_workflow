@@ -30,6 +30,24 @@ def _find_astrbot_data_dir_from_file(file_path: Path) -> Path:
     return (Path.cwd() / "data").resolve()
 
 
+def _normalize_cmd(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("/"):
+        s = s[1:]
+    return s.strip().casefold()
+
+
+def _is_safe_relpath(relpath: str) -> bool:
+    if not relpath:
+        return False
+    p = Path(relpath)
+    if p.is_absolute():
+        return False
+    if any(part in {"..", ""} for part in p.parts):
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class ComfyUIImageRef:
     filename: str
@@ -74,16 +92,35 @@ class ComfyUIClient:
             return resp.content
 
 
+@dataclass(frozen=True)
+class WorkflowSpec:
+    name: str
+    command: str
+    aliases: frozenset[str]
+    workflow_api_file: str
+    require_prompt: bool
+    fixed_prompt: str | None
+    prompt_input_node_id: str | None
+    prompt_input_field: str
+    negative_prompt_input_node_id: str | None
+    negative_prompt_input_field: str
+    default_negative_prompt: str | None
+    output_node_id: str
+    output_image_index: int
+
+
 @register(
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.1.1",
+    "0.2.0",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
         super().__init__(context)
         self.config = config or {}
+
+        self._plugin_dir = Path(__file__).resolve().parent
 
         plugin_name = getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow"
         data_root = _find_astrbot_data_dir_from_file(Path(__file__))
@@ -91,45 +128,81 @@ class ComfyUIWorkflowPlugin(Star):
         self._images_dir = self._plugin_data_dir / "images"
         self._images_dir.mkdir(parents=True, exist_ok=True)
 
-    @filter.command("随机图", alias={"random图", "随机"})
-    async def random_image(self, event: AstrMessageEvent):
-        prompt = (self.config.get("random_prompt") or "").strip()
-        yield event.plain_result("已收到随机绘图请求，正在生成，请稍等...")
-        random_workflow = (self.config.get("random_workflow_api_json") or "").strip() or None
-        random_output_node_id = (self.config.get("random_output_node_id") or "").strip() or None
-        random_output_index = int(self.config.get("random_output_image_index", -1))
-        async for result in self._run_and_build_results(
-            event=event,
-            prompt=prompt or None,
-            workflow_api_json_override=random_workflow,
-            output_node_id_override=random_output_node_id,
-            output_image_index_override=(None if random_output_index < 0 else random_output_index),
-        ):
-            yield result
+        try:
+            self._sync_workflow_file_options_to_schema()
+        except Exception:
+            pass
 
-    @filter.command("画图", alias={"draw"})
-    async def draw(self, event: AstrMessageEvent, *words: str):
-        prompt = " ".join(words).strip()
-        if not prompt:
-            yield event.plain_result("用法：/画图 你的描述\n示例：/画图 一只戴墨镜的橘猫，电影感，4k")
+    @filter.command_group("comfyui", alias={"comfy"})
+    def comfyui(self):
+        pass
+
+    @comfyui.command("help")
+    async def comfyui_help(self, event: AstrMessageEvent):
+        workflows = self._get_workflow_specs()
+        if not workflows:
+            yield event.plain_result(
+                "尚未配置任何工作流。\n"
+                "1) 把 ComfyUI 导出的 API JSON 放到插件目录或 workflows/\n"
+                "2) 在 WebUI 插件配置里新增一条‘工作流’配置\n"
+                "3) 选择文件并填写 output_node_id\n"
+                "新增文件后可执行：/comfyui refresh"
+            )
             return
-        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
-        async for result in self._run_and_build_results(event=event, prompt=prompt):
-            yield result
 
-    @filter.command("绘图帮助", alias={"画图帮助", "comfy帮助", "comfyui帮助"})
-    async def draw_help(self, event: AstrMessageEvent):
-        yield event.plain_result(
-            "可用指令：\n"
-            "1) /画图 你的描述\n"
-            "2) /随机图\n"
-            "3) 群聊发送“帮我画xxx”\n\n"
-            "首次使用请在插件配置里至少填写：\n"
-            "- comfyui_base_url\n"
-            "- workflow_api_json\n"
-            "- output_node_id\n"
-            "如果 /画图 不生效，再补充 prompt_input_node_id 与 prompt_input_field。"
-        )
+        lines = ["可用工作流命令："]
+        for w in workflows:
+            aliases = sorted(a for a in w.aliases if a != w.command)
+            alias_text = f"（别名：{', '.join(aliases)}）" if aliases else ""
+            lines.append(f"- /{w.command} {alias_text}".rstrip())
+        lines.append("\n管理指令：/comfyui refresh")
+        yield event.plain_result("\n".join(lines))
+
+    @comfyui.command("refresh")
+    async def comfyui_refresh(self, event: AstrMessageEvent):
+        try:
+            files = self._sync_workflow_file_options_to_schema()
+        except Exception as e:
+            yield event.plain_result(f"刷新失败：{e}")
+            return
+        if not files:
+            yield event.plain_result("未发现任何 .json 工作流文件（插件目录或 workflows/）。")
+            return
+        shown = "\n".join(f"- {f}" for f in files[:30])
+        suffix = "\n..." if len(files) > 30 else ""
+        yield event.plain_result(f"已刷新工作流下拉选项，发现 {len(files)} 个文件：\n{shown}{suffix}\n请刷新 WebUI 配置页面。")
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_all_message(self, event: AstrMessageEvent):
+        msg = (event.message_str or "").strip()
+        if not msg.startswith("/"):
+            return
+
+        parts = msg[1:].split()
+        if not parts:
+            return
+
+        cmd = _normalize_cmd(parts[0])
+        workflow = self._find_workflow_by_command(cmd)
+        if workflow is None:
+            return
+
+        event.stop_event()
+
+        user_prompt = " ".join(parts[1:]).strip()
+        prompt: str | None
+        if workflow.fixed_prompt:
+            prompt = workflow.fixed_prompt
+        else:
+            prompt = user_prompt or None
+
+        if workflow.require_prompt and not prompt:
+            yield event.plain_result(f"用法：/{workflow.command} 你的描述")
+            return
+
+        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
+        async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
+            yield result
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def nlp_draw(self, event: AstrMessageEvent):
@@ -171,69 +244,200 @@ class ComfyUIWorkflowPlugin(Star):
         else:
             yield event.plain_result(f"已为你整理提示词并开始绘制：{prompt}")
 
-        async for result in self._run_and_build_results(event=event, prompt=prompt):
+        target_cmd = _normalize_cmd(self.config.get("nlp_target_command") or "")
+        workflow = self._find_workflow_by_command(target_cmd) if target_cmd else None
+        if workflow is None:
+            workflow = self._get_workflow_specs()[0] if self._get_workflow_specs() else None
+        if workflow is None:
+            yield event.plain_result("尚未配置任何工作流，无法执行绘图。")
+            return
+
+        async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
 
-    async def _run_and_build_results(
-        self,
-        *,
-        event: AstrMessageEvent,
-        prompt: str | None,
-        workflow_api_json_override: str | None = None,
-        output_node_id_override: str | None = None,
-        output_image_index_override: int | None = None,
-    ):
+    def _get_workflow_specs(self) -> list[WorkflowSpec]:
+        raw = self.config.get("workflows")
+        if not isinstance(raw, list):
+            return []
+
+        out: list[WorkflowSpec] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+
+            name = (item.get("name") or "").strip() or "工作流"
+            command = _normalize_cmd(item.get("command") or "")
+            if not command:
+                continue
+
+            aliases_raw = item.get("aliases")
+            aliases: set[str] = set()
+            if isinstance(aliases_raw, list):
+                for a in aliases_raw:
+                    a_norm = _normalize_cmd(str(a))
+                    if a_norm:
+                        aliases.add(a_norm)
+            aliases.add(command)
+
+            workflow_api_file = (item.get("workflow_api_file") or "").strip()
+            if not workflow_api_file:
+                continue
+
+            require_prompt = bool(item.get("require_prompt", True))
+            fixed_prompt = (item.get("fixed_prompt") or "").strip() or None
+
+            prompt_input_node_id = (item.get("prompt_input_node_id") or "").strip() or None
+            prompt_input_field = (item.get("prompt_input_field") or "text").strip() or "text"
+
+            negative_prompt_input_node_id = (item.get("negative_prompt_input_node_id") or "").strip() or None
+            negative_prompt_input_field = (item.get("negative_prompt_input_field") or "text").strip() or "text"
+            default_negative_prompt = (item.get("default_negative_prompt") or "").strip() or None
+
+            output_node_id = (item.get("output_node_id") or "").strip()
+            if not output_node_id:
+                continue
+            output_image_index = int(item.get("output_image_index", 0) or 0)
+
+            out.append(
+                WorkflowSpec(
+                    name=name,
+                    command=command,
+                    aliases=frozenset(aliases),
+                    workflow_api_file=workflow_api_file,
+                    require_prompt=require_prompt,
+                    fixed_prompt=fixed_prompt,
+                    prompt_input_node_id=prompt_input_node_id,
+                    prompt_input_field=prompt_input_field,
+                    negative_prompt_input_node_id=negative_prompt_input_node_id,
+                    negative_prompt_input_field=negative_prompt_input_field,
+                    default_negative_prompt=default_negative_prompt,
+                    output_node_id=output_node_id,
+                    output_image_index=output_image_index,
+                )
+            )
+        return out
+
+    def _find_workflow_by_command(self, cmd: str) -> WorkflowSpec | None:
+        cmd_norm = _normalize_cmd(cmd)
+        if not cmd_norm:
+            return None
+        for w in self._get_workflow_specs():
+            if cmd_norm in w.aliases:
+                return w
+        return None
+
+    def _discover_workflow_api_files(self) -> list[str]:
+        candidates: list[Path] = []
+        candidates.extend(self._plugin_dir.glob("*.json"))
+        candidates.extend((self._plugin_dir / "workflows").glob("*.json"))
+
+        out: list[str] = []
+        for p in candidates:
+            if not p.is_file():
+                continue
+            if p.name in {"_conf_schema.json"}:
+                continue
+            try:
+                rel = p.relative_to(self._plugin_dir)
+            except ValueError:
+                continue
+            out.append(rel.as_posix())
+
+        out = sorted(set(out), key=lambda s: s.casefold())
+        return out
+
+    def _sync_workflow_file_options_to_schema(self) -> list[str]:
+        files = self._discover_workflow_api_files()
+        schema_path = self._plugin_dir / "_conf_schema.json"
+        if not schema_path.exists():
+            return files
+
+        schema: dict[str, Any] = json.loads(schema_path.read_text(encoding="utf-8"))
+        workflows = schema.get("workflows")
+        if not isinstance(workflows, dict):
+            return files
+        templates = workflows.get("templates")
+        if not isinstance(templates, dict):
+            return files
+        tpl = templates.get("workflow")
+        if not isinstance(tpl, dict):
+            return files
+        items = tpl.get("items")
+        if not isinstance(items, dict):
+            return files
+        wf_file = items.get("workflow_api_file")
+        if not isinstance(wf_file, dict):
+            return files
+
+        prev = wf_file.get("options")
+        if prev == files:
+            return files
+
+        wf_file["options"] = files
+        schema_path.write_text(json.dumps(schema, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        return files
+
+    def _load_workflow_api_json(self, workflow_api_file: str) -> dict[str, Any]:
+        rel = workflow_api_file.strip()
+        if not _is_safe_relpath(rel):
+            raise ValueError(f"工作流文件路径不安全：{workflow_api_file}")
+        path = (self._plugin_dir / rel).resolve()
+        if self._plugin_dir not in path.parents and path != self._plugin_dir:
+            raise ValueError(f"工作流文件不在插件目录内：{workflow_api_file}")
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(f"未找到工作流文件：{workflow_api_file}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"工作流文件不是有效的 API JSON 对象：{workflow_api_file}")
+        return data
+
+    async def _run_workflow(self, *, event: AstrMessageEvent, workflow: WorkflowSpec, prompt: str | None):
         comfyui_base_url = (self.config.get("comfyui_base_url") or "").strip()
         if not comfyui_base_url:
             yield event.plain_result("插件未配置 comfyui_base_url，请先在插件配置中填写 ComfyUI 地址。")
             return
 
-        workflow_api_json = (workflow_api_json_override or (self.config.get("workflow_api_json") or "{}")).strip()
         try:
-            workflow: dict[str, Any] = json.loads(workflow_api_json)
-        except json.JSONDecodeError as e:
-            yield event.plain_result(f"workflow_api_json 不是有效 JSON，请检查格式。错误：{e}")
+            workflow_json = self._load_workflow_api_json(workflow.workflow_api_file)
+        except Exception as e:
+            yield event.plain_result(f"读取工作流文件失败：{e}")
             return
 
-        output_node_id = (output_node_id_override or (self.config.get("output_node_id") or "")).strip()
-        if not output_node_id:
-            yield event.plain_result("插件未配置 output_node_id，请填写输出图片节点 id（通常是 SaveImage 节点）。")
-            return
-
-        prompt_node_id = (self.config.get("prompt_input_node_id") or "").strip()
-        prompt_field = (self.config.get("prompt_input_field") or "text").strip() or "text"
-
-        neg_node_id = (self.config.get("negative_prompt_input_node_id") or "").strip()
-        neg_field = (self.config.get("negative_prompt_input_field") or "text").strip() or "text"
-        default_negative = (self.config.get("default_negative_prompt") or "").strip()
-
-        if prompt is not None and prompt_node_id:
+        if prompt is not None and workflow.prompt_input_node_id:
             try:
-                self._set_workflow_input(workflow, node_id=prompt_node_id, field=prompt_field, value=prompt)
+                self._set_workflow_input(
+                    workflow_json,
+                    node_id=workflow.prompt_input_node_id,
+                    field=workflow.prompt_input_field,
+                    value=prompt,
+                )
             except Exception as e:
-                yield event.plain_result(f"写入提示词失败，请检查 prompt_input_node_id / prompt_input_field。错误：{e}")
+                yield event.plain_result(f"写入提示词失败，请检查节点 ID/字段。错误：{e}")
                 return
 
-        if neg_node_id and default_negative:
+        if workflow.negative_prompt_input_node_id and workflow.default_negative_prompt:
             try:
-                self._set_workflow_input(workflow, node_id=neg_node_id, field=neg_field, value=default_negative)
+                self._set_workflow_input(
+                    workflow_json,
+                    node_id=workflow.negative_prompt_input_node_id,
+                    field=workflow.negative_prompt_input_field,
+                    value=workflow.default_negative_prompt,
+                )
             except Exception as e:
-                yield event.plain_result(f"写入负面提示词失败，请检查 negative_prompt_input_node_id / negative_prompt_input_field。错误：{e}")
+                yield event.plain_result(f"写入负面提示词失败，请检查节点 ID/字段。错误：{e}")
                 return
 
         client = ComfyUIClient(comfyui_base_url)
         poll_interval = float(self.config.get("poll_interval_sec", 1.0))
         job_timeout = int(self.config.get("job_timeout_sec", 180))
-        image_index = int(self.config.get("output_image_index", 0))
-        if output_image_index_override is not None:
-            image_index = int(output_image_index_override)
+        image_index = int(workflow.output_image_index)
 
         try:
-            prompt_id = await client.queue_prompt(workflow)
+            prompt_id = await client.queue_prompt(workflow_json)
             img_ref = await self._wait_for_output_image(
                 client=client,
                 prompt_id=prompt_id,
-                output_node_id=output_node_id,
+                output_node_id=workflow.output_node_id,
                 image_index=image_index,
                 poll_interval_sec=poll_interval,
                 timeout_sec=job_timeout,
