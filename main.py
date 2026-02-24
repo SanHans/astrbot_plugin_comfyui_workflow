@@ -464,6 +464,9 @@ class ComfyUIWorkflowPlugin(Star):
         if not bool(self.config.get("enable_nlp_draw", True)):
             return
 
+        if bool(self.config.get("nlp_require_at_bot", True)) and not self._is_at_bot(event):
+            return
+
         msg = (event.message_str or "").strip()
         prefixes: list[str] = self.config.get("nlp_draw_prefixes") or []
         prefixes = [p.strip() for p in prefixes if (p or "").strip()]
@@ -509,6 +512,34 @@ class ComfyUIWorkflowPlugin(Star):
 
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
+
+    def _is_at_bot(self, event: AstrMessageEvent) -> bool:
+        try:
+            msg_obj = getattr(event, "message_obj", None)
+            if msg_obj is None:
+                return False
+            self_id = str(getattr(msg_obj, "self_id", "") or "").strip()
+            if not self_id:
+                return False
+            chain = getattr(msg_obj, "message", None)
+            if not isinstance(chain, list):
+                return False
+
+            for seg in chain:
+                try:
+                    # At segment usually has 'qq'
+                    qq = getattr(seg, "qq", None)
+                    if qq is None:
+                        continue
+                    if str(qq).strip() == self_id:
+                        return True
+                except Exception:
+                    continue
+
+        except Exception:
+            return False
+
+        return False
 
     def _get_workflow_specs(self) -> list[WorkflowSpec]:
         raw = self.config.get("workflows")
@@ -809,13 +840,24 @@ class ComfyUIWorkflowPlugin(Star):
             if seed_min > seed_max:
                 seed_min, seed_max = seed_max, seed_min
             seed_span = max(0, seed_max - seed_min)
-            seed = seed_min + secrets.randbelow(seed_span + 1)
 
-            seed_targets: list[tuple[str, str]] = []
+            # Follow comfyui_pro behavior: write seed/noise_seed for ALL nodes that have it.
+            # This prevents random-text nodes from being cached.
+            base_seed = seed_min + secrets.randbelow(seed_span + 1)
+            seed_targets = self._auto_detect_seed_targets(workflow_json, default_field=workflow.seed_input_field)
+
+            # Ensure explicit target is included (if provided)
             if workflow.seed_input_node_id:
-                seed_targets = [(workflow.seed_input_node_id, workflow.seed_input_field)]
-            else:
-                seed_targets = self._auto_detect_seed_targets(workflow_json, default_field=workflow.seed_input_field)
+                seed_targets.insert(0, (workflow.seed_input_node_id, workflow.seed_input_field))
+                # de-dup while preserving order
+                seen = set()
+                deduped: list[tuple[str, str]] = []
+                for t in seed_targets:
+                    if t in seen:
+                        continue
+                    seen.add(t)
+                    deduped.append(t)
+                seed_targets = deduped
 
             if not seed_targets:
                 yield event.plain_result(
@@ -824,9 +866,16 @@ class ComfyUIWorkflowPlugin(Star):
                 )
                 return
 
+            offset = 0
             for node_id, field in seed_targets:
                 try:
-                    self._set_workflow_input(workflow_json, node_id=node_id, field=field, value=int(seed))
+                    self._set_workflow_input(
+                        workflow_json,
+                        node_id=node_id,
+                        field=field,
+                        value=int(base_seed + offset),
+                    )
+                    offset += 1
                 except Exception as e:
                     yield event.plain_result(
                         f"写入随机 seed 失败：node_id={node_id} field={field}。请检查节点 ID/字段。错误：{e}"

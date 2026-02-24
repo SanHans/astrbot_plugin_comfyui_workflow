@@ -155,6 +155,12 @@
     "hint": "开启后在群聊返回图片时会 @ 触发者（仅在平台支持且 sender_id 为数字时生效）。",
     "default": true
   },
+  "nlp_require_at_bot": {
+    "type": "bool",
+    "description": "自然语言需@机器人（群聊）",
+    "hint": "开启后群聊自然语言触发仅在消息中 @ 机器人时生效，避免误触发。",
+    "default": true
+  },
   "job_timeout_sec": {
     "type": "int",
     "description": "任务超时（秒）",
