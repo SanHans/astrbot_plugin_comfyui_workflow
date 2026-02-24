@@ -61,21 +61,10 @@
             "hint": "接收画图描述文本的节点 ID（通常是 CLIPTextEncode 正向节点）。留空则不写入提示词。",
             "default": ""
           },
-          "prompt_input_field": {
-            "type": "string",
-            "description": "正向提示词输入字段",
-            "hint": "通常填写 text。",
-            "default": "text"
-          },
           "negative_prompt_input_node_id": {
             "type": "string",
             "description": "负面提示词输入节点 ID（可选）",
             "default": ""
-          },
-          "negative_prompt_input_field": {
-            "type": "string",
-            "description": "负面提示词输入字段",
-            "default": "text"
           },
           "default_negative_prompt": {
             "type": "string",
@@ -94,22 +83,6 @@
             "hint": "通常是 KSampler 节点 ID。留空则尝试自动寻找工作流中的 KSampler/含 seed 字段的节点。",
             "default": ""
           },
-          "seed_input_field": {
-            "type": "string",
-            "description": "Seed 字段",
-            "hint": "通常填写 seed。",
-            "default": "seed"
-          },
-          "seed_random_min": {
-            "type": "int",
-            "description": "随机 seed 最小值",
-            "default": 0
-          },
-          "seed_random_max": {
-            "type": "int",
-            "description": "随机 seed 最大值",
-            "default": 4294967295
-          },
           "output_node_id": {
             "type": "string",
             "description": "输出图片节点 ID",
@@ -119,8 +92,9 @@
           "output_image_index": {
             "type": "int",
             "description": "输出图片序号",
-            "hint": "当一个节点输出多张图时，选择第几张（从 0 开始）。",
-            "default": 0
+            "hint": "已固定为 0（第 1 张）。此项保留仅用于兼容旧配置，不会出现在配置页。",
+            "default": 0,
+            "invisible": true
           }
         }
       }

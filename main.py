@@ -187,15 +187,10 @@ class WorkflowSpec:
     require_prompt: bool
     fixed_prompt: str | None
     prompt_input_node_id: str | None
-    prompt_input_field: str
     negative_prompt_input_node_id: str | None
-    negative_prompt_input_field: str
     default_negative_prompt: str | None
     seed_randomize: bool
     seed_input_node_id: str | None
-    seed_input_field: str
-    seed_random_min: int
-    seed_random_max: int
     output_node_id: str | None
     output_image_index: int
 
@@ -354,6 +349,8 @@ class ComfyUIWorkflowPlugin(Star):
                     "output_node_id": w.output_node_id,
                     "prompt_input_node_id": w.prompt_input_node_id,
                     "negative_prompt_input_node_id": w.negative_prompt_input_node_id,
+                    "seed_randomize": w.seed_randomize,
+                    "seed_input_node_id": w.seed_input_node_id,
                 }
                 for w in specs
             ],
@@ -571,17 +568,12 @@ class ComfyUIWorkflowPlugin(Star):
             fixed_prompt = (item.get("fixed_prompt") or "").strip() or None
 
             prompt_input_node_id = (item.get("prompt_input_node_id") or "").strip() or None
-            prompt_input_field = (item.get("prompt_input_field") or "text").strip() or "text"
 
             negative_prompt_input_node_id = (item.get("negative_prompt_input_node_id") or "").strip() or None
-            negative_prompt_input_field = (item.get("negative_prompt_input_field") or "text").strip() or "text"
             default_negative_prompt = (item.get("default_negative_prompt") or "").strip() or None
 
             seed_randomize = bool(item.get("seed_randomize", False))
             seed_input_node_id = (item.get("seed_input_node_id") or "").strip() or None
-            seed_input_field = (item.get("seed_input_field") or "seed").strip() or "seed"
-            seed_random_min = int(item.get("seed_random_min", 0) or 0)
-            seed_random_max = int(item.get("seed_random_max", 4294967295) or 4294967295)
 
             output_node_id = (item.get("output_node_id") or "").strip() or None
             output_image_index = int(item.get("output_image_index", 0) or 0)
@@ -595,15 +587,10 @@ class ComfyUIWorkflowPlugin(Star):
                     require_prompt=require_prompt,
                     fixed_prompt=fixed_prompt,
                     prompt_input_node_id=prompt_input_node_id,
-                    prompt_input_field=prompt_input_field,
                     negative_prompt_input_node_id=negative_prompt_input_node_id,
-                    negative_prompt_input_field=negative_prompt_input_field,
                     default_negative_prompt=default_negative_prompt,
                     seed_randomize=seed_randomize,
                     seed_input_node_id=seed_input_node_id,
-                    seed_input_field=seed_input_field,
-                    seed_random_min=seed_random_min,
-                    seed_random_max=seed_random_max,
                     output_node_id=output_node_id,
                     output_image_index=output_image_index,
                 )
@@ -835,29 +822,10 @@ class ComfyUIWorkflowPlugin(Star):
             return
 
         if workflow.seed_randomize:
-            seed_min = int(workflow.seed_random_min)
-            seed_max = int(workflow.seed_random_max)
-            if seed_min > seed_max:
-                seed_min, seed_max = seed_max, seed_min
-            seed_span = max(0, seed_max - seed_min)
-
+            # Use default ComfyUI-style seed range.
             # Follow comfyui_pro behavior: write seed/noise_seed for ALL nodes that have it.
-            # This prevents random-text nodes from being cached.
-            base_seed = seed_min + secrets.randbelow(seed_span + 1)
-            seed_targets = self._auto_detect_seed_targets(workflow_json, default_field=workflow.seed_input_field)
-
-            # Ensure explicit target is included (if provided)
-            if workflow.seed_input_node_id:
-                seed_targets.insert(0, (workflow.seed_input_node_id, workflow.seed_input_field))
-                # de-dup while preserving order
-                seen = set()
-                deduped: list[tuple[str, str]] = []
-                for t in seed_targets:
-                    if t in seen:
-                        continue
-                    seen.add(t)
-                    deduped.append(t)
-                seed_targets = deduped
+            base_seed = secrets.randbelow(4294967296)
+            seed_targets = self._auto_detect_seed_targets(workflow_json, prefer_node_id=workflow.seed_input_node_id)
 
             if not seed_targets:
                 yield event.plain_result(
@@ -887,7 +855,7 @@ class ComfyUIWorkflowPlugin(Star):
                 self._set_workflow_input(
                     workflow_json,
                     node_id=workflow.prompt_input_node_id,
-                    field=workflow.prompt_input_field,
+                    field="text",
                     value=prompt,
                 )
             except Exception as e:
@@ -896,12 +864,13 @@ class ComfyUIWorkflowPlugin(Star):
 
         if workflow.negative_prompt_input_node_id and workflow.default_negative_prompt:
             try:
-                self._set_workflow_input(
+                existing = self._get_workflow_input(
                     workflow_json,
                     node_id=workflow.negative_prompt_input_node_id,
-                    field=workflow.negative_prompt_input_field,
-                    value=workflow.default_negative_prompt,
+                    field="text",
                 )
+                merged = self._merge_prompt_text(existing, workflow.default_negative_prompt)
+                self._set_workflow_input(workflow_json, node_id=workflow.negative_prompt_input_node_id, field="text", value=merged)
             except Exception as e:
                 yield event.plain_result(f"写入负面提示词失败，请检查节点 ID/字段。错误：{e}")
                 return
@@ -910,6 +879,8 @@ class ComfyUIWorkflowPlugin(Star):
         poll_interval = float(self.config.get("poll_interval_sec", 1.0))
         job_timeout = int(self.config.get("job_timeout_sec", 180))
         image_index = int(workflow.output_image_index)
+        # Always pick first image; keep field only for backward compatibility.
+        image_index = 0
 
         try:
             prompt_id = await client.queue_prompt(workflow_json)
@@ -969,17 +940,53 @@ class ComfyUIWorkflowPlugin(Star):
         inputs[field] = value
 
     @staticmethod
-    def _auto_detect_seed_targets(workflow: dict[str, Any], *, default_field: str = "seed") -> list[tuple[str, str]]:
-        """Try to find nodes that accept a seed input.
+    def _get_workflow_input(workflow: dict[str, Any], *, node_id: str, field: str) -> Any:
+        node = workflow.get(str(node_id))
+        if not isinstance(node, dict):
+            raise KeyError(f"未找到节点 id: {node_id}")
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            raise KeyError(f"节点 {node_id} 不包含 inputs 字段")
+        return inputs.get(field)
 
-        Prefer nodes whose class_type looks like KSampler; otherwise fall back to any node with a seed-like input.
-        Returns a list to support workflows with multiple samplers.
+    @staticmethod
+    def _merge_prompt_text(existing: Any, add: str) -> str:
+        add = (add or "").strip()
+        if not add:
+            return str(existing or "").strip()
+
+        if existing is None:
+            return add
+
+        if isinstance(existing, str):
+            left = existing.strip()
+        else:
+            left = str(existing).strip()
+
+        if not left:
+            return add
+
+        # Simple concat; don't try to de-dup keywords.
+        return f"{left}, {add}"
+
+    @staticmethod
+    def _auto_detect_seed_targets(
+        workflow: dict[str, Any],
+        *,
+        prefer_node_id: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """Find all nodes that accept seed/noise_seed.
+
+        Order: preferred node first (if provided), then KSampler-like nodes, then others.
         """
         if not isinstance(workflow, dict):
             return []
 
+        prefer_node_id = (prefer_node_id or "").strip() or None
+
         preferred: list[tuple[str, str]] = []
-        fallback: list[tuple[str, str]] = []
+        ks: list[tuple[str, str]] = []
+        other: list[tuple[str, str]] = []
 
         for node_id, node in workflow.items():
             if not isinstance(node_id, str):
@@ -994,26 +1001,18 @@ class ComfyUIWorkflowPlugin(Star):
             class_type = str(node.get("class_type") or "")
             class_cf = class_type.casefold()
 
-            if default_field in inputs:
-                target = (str(node_id), str(default_field))
-                if "ksampler" in class_cf:
-                    preferred.append(target)
-                else:
-                    fallback.append(target)
-                continue
-
-            # Some nodes use variations like 'noise_seed'
             for k in ("seed", "noise_seed"):
-                if k in inputs:
-                    target = (str(node_id), str(k))
-                    if "ksampler" in class_cf:
-                        preferred.append(target)
-                    else:
-                        fallback.append(target)
-                    break
+                if k not in inputs:
+                    continue
+                target = (str(node_id), str(k))
+                if prefer_node_id is not None and str(node_id) == prefer_node_id:
+                    preferred.append(target)
+                elif "ksampler" in class_cf:
+                    ks.append(target)
+                else:
+                    other.append(target)
 
-        # Apply to all seed-like nodes (KSampler first), so random text nodes also change.
-        combined = preferred + fallback
+        combined = preferred + ks + other
         if not combined:
             return []
 

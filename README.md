@@ -43,12 +43,11 @@
 
 如果你希望把提示词写进工作流：
 
-- `prompt_input_node_id`：正向提示词输入节点 id（通常是正向 `CLIPTextEncode` 节点）
-- `prompt_input_field`：字段名（通常是 `text`）
+- `prompt_input_node_id`：正向提示词输入节点 id（通常是正向 `CLIPTextEncode` 节点，字段固定为 `text`）
 
 可选：
 
 - 在 `workflows` 里再加一条工作流，并把 `command` 设置为 `随机图`（或任意命令）
 - `fixed_prompt`：固定提示词（用于随机图等无需参数的工作流）
 - `require_prompt=false`：允许用户仅输入 `/<command>`
-- `negative_prompt_input_node_id` / `default_negative_prompt`：写入固定的负面提示词
+- `negative_prompt_input_node_id` / `default_negative_prompt`：把默认负面提示词与工作流内已有负面提示词拼接后写入（字段固定为 `text`）
