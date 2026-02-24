@@ -77,8 +77,8 @@ class ComfyUIClient:
 @register(
     "astrbot_plugin_comfyui_workflow",
     "you",
-    "Trigger a ComfyUI workflow and return images",
-    "0.1.0",
+    "对接 ComfyUI 工作流并返回图片",
+    "0.1.1",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -94,7 +94,7 @@ class ComfyUIWorkflowPlugin(Star):
     @filter.command("随机图", alias={"random图", "随机"})
     async def random_image(self, event: AstrMessageEvent):
         prompt = (self.config.get("random_prompt") or "").strip()
-        yield event.plain_result("已提交生成任务，正在排队/生成...")
+        yield event.plain_result("已收到随机绘图请求，正在生成，请稍等...")
         random_workflow = (self.config.get("random_workflow_api_json") or "").strip() or None
         random_output_node_id = (self.config.get("random_output_node_id") or "").strip() or None
         random_output_index = int(self.config.get("random_output_image_index", -1))
@@ -111,11 +111,25 @@ class ComfyUIWorkflowPlugin(Star):
     async def draw(self, event: AstrMessageEvent, *words: str):
         prompt = " ".join(words).strip()
         if not prompt:
-            yield event.plain_result("用法: /画图 你的描述")
+            yield event.plain_result("用法：/画图 你的描述\n示例：/画图 一只戴墨镜的橘猫，电影感，4k")
             return
-        yield event.plain_result("已提交生成任务，正在排队/生成...")
+        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
         async for result in self._run_and_build_results(event=event, prompt=prompt):
             yield result
+
+    @filter.command("绘图帮助", alias={"画图帮助", "comfy帮助", "comfyui帮助"})
+    async def draw_help(self, event: AstrMessageEvent):
+        yield event.plain_result(
+            "可用指令：\n"
+            "1) /画图 你的描述\n"
+            "2) /随机图\n"
+            "3) 群聊发送“帮我画xxx”\n\n"
+            "首次使用请在插件配置里至少填写：\n"
+            "- comfyui_base_url\n"
+            "- workflow_api_json\n"
+            "- output_node_id\n"
+            "如果 /画图 不生效，再补充 prompt_input_node_id 与 prompt_input_field。"
+        )
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def nlp_draw(self, event: AstrMessageEvent):
@@ -137,17 +151,26 @@ class ComfyUIWorkflowPlugin(Star):
         if not raw_req:
             return
 
-        provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
-        instruction = (self.config.get("llm_prompt_instruction") or "").strip()
-        llm_prompt = f"{instruction}\n\nUser request: {raw_req}"
-        llm_resp = await self.context.llm_generate(chat_provider_id=provider_id, prompt=llm_prompt)
-        prompt = (llm_resp.completion_text or "").strip()
-        prompt = re.sub(r"^```.*?\n|```$", "", prompt, flags=re.DOTALL).strip()
-        if not prompt:
-            yield event.plain_result("生成提示词失败，请换个描述再试。")
-            return
+        event.stop_event()
 
-        yield event.plain_result(f"收到: {raw_req}\n提示词: {prompt}\n开始绘制...")
+        instruction = (self.config.get("llm_prompt_instruction") or "").strip()
+        prompt = ""
+        try:
+            provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
+            if provider_id:
+                llm_prompt = f"{instruction}\n\n用户需求：{raw_req}"
+                llm_resp = await self.context.llm_generate(chat_provider_id=provider_id, prompt=llm_prompt)
+                prompt = (llm_resp.completion_text or "").strip()
+                prompt = re.sub(r"^```.*?\n|```$", "", prompt, flags=re.DOTALL).strip()
+        except Exception:
+            prompt = ""
+
+        if not prompt:
+            prompt = raw_req
+            yield event.plain_result("未能获取 AI 润色提示词，已使用原描述继续绘图。")
+        else:
+            yield event.plain_result(f"已为你整理提示词并开始绘制：{prompt}")
+
         async for result in self._run_and_build_results(event=event, prompt=prompt):
             yield result
 
@@ -162,19 +185,19 @@ class ComfyUIWorkflowPlugin(Star):
     ):
         comfyui_base_url = (self.config.get("comfyui_base_url") or "").strip()
         if not comfyui_base_url:
-            yield event.plain_result("插件未配置 comfyui_base_url")
+            yield event.plain_result("插件未配置 comfyui_base_url，请先在插件配置中填写 ComfyUI 地址。")
             return
 
         workflow_api_json = (workflow_api_json_override or (self.config.get("workflow_api_json") or "{}")).strip()
         try:
             workflow: dict[str, Any] = json.loads(workflow_api_json)
         except json.JSONDecodeError as e:
-            yield event.plain_result(f"workflow_api_json 不是有效 JSON: {e}")
+            yield event.plain_result(f"workflow_api_json 不是有效 JSON，请检查格式。错误：{e}")
             return
 
         output_node_id = (output_node_id_override or (self.config.get("output_node_id") or "")).strip()
         if not output_node_id:
-            yield event.plain_result("插件未配置 output_node_id")
+            yield event.plain_result("插件未配置 output_node_id，请填写输出图片节点 id（通常是 SaveImage 节点）。")
             return
 
         prompt_node_id = (self.config.get("prompt_input_node_id") or "").strip()
@@ -188,14 +211,14 @@ class ComfyUIWorkflowPlugin(Star):
             try:
                 self._set_workflow_input(workflow, node_id=prompt_node_id, field=prompt_field, value=prompt)
             except Exception as e:
-                yield event.plain_result(f"写入 prompt 失败: {e}")
+                yield event.plain_result(f"写入提示词失败，请检查 prompt_input_node_id / prompt_input_field。错误：{e}")
                 return
 
         if neg_node_id and default_negative:
             try:
                 self._set_workflow_input(workflow, node_id=neg_node_id, field=neg_field, value=default_negative)
             except Exception as e:
-                yield event.plain_result(f"写入 negative prompt 失败: {e}")
+                yield event.plain_result(f"写入负面提示词失败，请检查 negative_prompt_input_node_id / negative_prompt_input_field。错误：{e}")
                 return
 
         client = ComfyUIClient(comfyui_base_url)
@@ -228,10 +251,10 @@ class ComfyUIWorkflowPlugin(Star):
     def _set_workflow_input(workflow: dict[str, Any], *, node_id: str, field: str, value: Any) -> None:
         node = workflow.get(str(node_id))
         if not isinstance(node, dict):
-            raise KeyError(f"workflow node not found: {node_id}")
+            raise KeyError(f"未找到节点 id: {node_id}")
         inputs = node.get("inputs")
         if not isinstance(inputs, dict):
-            raise KeyError(f"workflow node has no inputs: {node_id}")
+            raise KeyError(f"节点 {node_id} 不包含 inputs 字段")
         inputs[field] = value
 
     async def _wait_for_output_image(
@@ -267,19 +290,19 @@ class ComfyUIWorkflowPlugin(Star):
                                         subfolder=img.get("subfolder") or None,
                                         type=img.get("type") or None,
                                     )
-                            last_err = f"images exists but index {image_index} invalid"
+                            last_err = f"输出图片序号无效：{image_index}"
                         else:
-                            last_err = "no images in output yet"
+                            last_err = "输出节点暂未产出图片"
                     else:
-                        last_err = f"output node not ready: {output_node_id}"
+                        last_err = f"输出节点尚未就绪：{output_node_id}"
                 else:
-                    last_err = "outputs not ready"
+                    last_err = "工作流输出尚未就绪"
             else:
-                last_err = "history not ready"
+                last_err = "任务历史尚未就绪"
 
             await asyncio.sleep(max(0.2, poll_interval_sec))
 
-        raise TimeoutError(last_err or "timeout")
+        raise TimeoutError(last_err or "任务超时")
 
     def _write_image(self, img_bytes: bytes) -> Path:
         name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.png"

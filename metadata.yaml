@@ -1,8 +1,8 @@
 name: astrbot_plugin_comfyui_workflow
 display_name: ComfyUI 工作流
 author: you
-version: 0.1.0
-description: "AstrBot plugin: trigger ComfyUI workflow and return images."
+version: 0.1.1
+description: "对接 ComfyUI 工作流并返回生成图片"
 
 # Optional
 support_platforms:

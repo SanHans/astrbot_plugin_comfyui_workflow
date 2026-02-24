@@ -1,114 +1,114 @@
 {
   "comfyui_base_url": {
     "type": "string",
-    "description": "ComfyUI base URL",
-    "hint": "Example: http://127.0.0.1:8188",
+    "description": "ComfyUI 服务地址",
+    "hint": "例如：http://127.0.0.1:8188",
     "default": "http://127.0.0.1:8188"
   },
   "workflow_api_json": {
     "type": "text",
-    "description": "ComfyUI workflow (API format JSON)",
-    "hint": "In ComfyUI: Save -> API Format. Paste the whole JSON here.",
+    "description": "主工作流（API 格式 JSON）",
+    "hint": "在 ComfyUI 中点击 Save -> API Format，把完整 JSON 粘贴到这里。",
     "default": "{}",
     "editor_mode": true,
     "editor_language": "json"
   },
   "random_workflow_api_json": {
     "type": "text",
-    "description": "Workflow used by /随机图 (optional)",
-    "hint": "Leave empty to reuse workflow_api_json.",
+    "description": "随机图专用工作流（可选）",
+    "hint": "留空则复用主工作流。",
     "default": "",
     "editor_mode": true,
     "editor_language": "json"
   },
   "prompt_input_node_id": {
     "type": "string",
-    "description": "Positive prompt input node id",
-    "hint": "The node id that receives your prompt text (as string).",
+    "description": "正向提示词输入节点 ID",
+    "hint": "接收画图描述文本的节点 ID（通常是 CLIPTextEncode 正向节点）。",
     "default": ""
   },
   "prompt_input_field": {
     "type": "string",
-    "description": "Positive prompt input field",
-    "hint": "Usually: text",
+    "description": "正向提示词输入字段",
+    "hint": "通常填写 text。",
     "default": "text"
   },
   "negative_prompt_input_node_id": {
     "type": "string",
-    "description": "Negative prompt input node id (optional)",
-    "hint": "Leave empty to disable.",
+    "description": "负面提示词输入节点 ID（可选）",
+    "hint": "留空则不写入负面提示词。",
     "default": ""
   },
   "negative_prompt_input_field": {
     "type": "string",
-    "description": "Negative prompt input field",
+    "description": "负面提示词输入字段",
     "default": "text"
   },
   "default_negative_prompt": {
     "type": "string",
-    "description": "Default negative prompt",
+    "description": "默认负面提示词",
     "default": ""
   },
   "output_node_id": {
     "type": "string",
-    "description": "Output node id (images)",
-    "hint": "The node id that contains the final image output.",
+    "description": "输出图片节点 ID",
+    "hint": "最终产出图片的节点 ID（通常是 SaveImage 节点）。",
     "default": ""
   },
   "random_output_node_id": {
     "type": "string",
-    "description": "Output node id for /随机图 (optional)",
-    "hint": "Leave empty to reuse output_node_id.",
+    "description": "随机图输出节点 ID（可选）",
+    "hint": "留空则复用 output_node_id。",
     "default": ""
   },
   "output_image_index": {
     "type": "int",
-    "description": "Output image index",
-    "hint": "Which image to pick from the output list.",
+    "description": "输出图片序号",
+    "hint": "当一个节点输出多张图时，选择第几张（从 0 开始）。",
     "default": 0
   },
   "random_output_image_index": {
     "type": "int",
-    "description": "Output image index for /随机图 (optional)",
-    "hint": "Leave as -1 to reuse output_image_index.",
+    "description": "随机图输出图片序号（可选）",
+    "hint": "设为 -1 表示复用 output_image_index。",
     "default": -1
   },
   "random_prompt": {
     "type": "string",
-    "description": "Prompt used by /随机图",
-    "hint": "Leave empty to keep workflow defaults.",
+    "description": "随机图提示词",
+    "hint": "留空则使用工作流中的默认值。",
     "default": ""
   },
   "poll_interval_sec": {
     "type": "float",
-    "description": "Polling interval (seconds)",
+    "description": "轮询间隔（秒）",
     "default": 1.0
   },
   "job_timeout_sec": {
     "type": "int",
-    "description": "Job timeout (seconds)",
+    "description": "任务超时（秒）",
     "default": 180
   },
   "save_last_n": {
     "type": "int",
-    "description": "Keep last N images",
-    "hint": "Older images will be deleted from data/plugin_data/...",
+    "description": "保留最近 N 张图片",
+    "hint": "更早的图片会自动从 data/plugin_data/... 中删除。",
     "default": 30
   },
   "enable_nlp_draw": {
     "type": "bool",
-    "description": "Enable trigger: '帮我画xxx'",
+    "description": "启用自然语言触发（如：帮我画xxx）",
     "default": true
   },
   "nlp_draw_prefixes": {
     "type": "list",
-    "description": "NLP trigger prefixes",
-    "hint": "Message starts with one of these prefixes.",
+    "description": "自然语言触发前缀",
+    "hint": "群消息以这些前缀开头时触发绘图。",
     "default": ["帮我画", "给我画", "帮我生成", "画一张"]
   },
   "llm_prompt_instruction": {
     "type": "text",
-    "description": "LLM instruction for prompt writing",
-    "default": "You are a Stable Diffusion / ComfyUI prompt engineer. Convert the user's request into a concise, high-quality positive prompt (English preferred). Output ONLY the positive prompt, one line, no quotes, no markdown."
+    "description": "AI 提示词改写指令",
+    "default": "你是 ComfyUI 绘图提示词助手。请把用户需求改写为适合 Stable Diffusion / Flux 的高质量正向提示词，尽量使用英文关键词并保留主体、画风、构图、光影和细节要求。只输出一行提示词，不要解释，不要 Markdown，不要引号。"
   }
 }
