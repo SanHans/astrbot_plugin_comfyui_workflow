@@ -82,6 +82,34 @@
             "description": "默认负面提示词（可选）",
             "default": ""
           },
+          "seed_randomize": {
+            "type": "bool",
+            "description": "每次随机种子",
+            "hint": "开启后每次触发都会向指定节点写入随机 seed，避免连续两次生成完全相同的图。",
+            "default": false
+          },
+          "seed_input_node_id": {
+            "type": "string",
+            "description": "Seed 输入节点 ID（可选）",
+            "hint": "通常是 KSampler 节点 ID。配合‘每次随机种子’使用。",
+            "default": ""
+          },
+          "seed_input_field": {
+            "type": "string",
+            "description": "Seed 字段",
+            "hint": "通常填写 seed。",
+            "default": "seed"
+          },
+          "seed_random_min": {
+            "type": "int",
+            "description": "随机 seed 最小值",
+            "default": 0
+          },
+          "seed_random_max": {
+            "type": "int",
+            "description": "随机 seed 最大值",
+            "default": 4294967295
+          },
           "output_node_id": {
             "type": "string",
             "description": "输出图片节点 ID",

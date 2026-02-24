@@ -4,6 +4,7 @@ from collections import deque
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -190,6 +191,11 @@ class WorkflowSpec:
     negative_prompt_input_node_id: str | None
     negative_prompt_input_field: str
     default_negative_prompt: str | None
+    seed_randomize: bool
+    seed_input_node_id: str | None
+    seed_input_field: str
+    seed_random_min: int
+    seed_random_max: int
     output_node_id: str | None
     output_image_index: int
 
@@ -538,6 +544,12 @@ class ComfyUIWorkflowPlugin(Star):
             negative_prompt_input_field = (item.get("negative_prompt_input_field") or "text").strip() or "text"
             default_negative_prompt = (item.get("default_negative_prompt") or "").strip() or None
 
+            seed_randomize = bool(item.get("seed_randomize", False))
+            seed_input_node_id = (item.get("seed_input_node_id") or "").strip() or None
+            seed_input_field = (item.get("seed_input_field") or "seed").strip() or "seed"
+            seed_random_min = int(item.get("seed_random_min", 0) or 0)
+            seed_random_max = int(item.get("seed_random_max", 4294967295) or 4294967295)
+
             output_node_id = (item.get("output_node_id") or "").strip() or None
             output_image_index = int(item.get("output_image_index", 0) or 0)
 
@@ -554,6 +566,11 @@ class ComfyUIWorkflowPlugin(Star):
                     negative_prompt_input_node_id=negative_prompt_input_node_id,
                     negative_prompt_input_field=negative_prompt_input_field,
                     default_negative_prompt=default_negative_prompt,
+                    seed_randomize=seed_randomize,
+                    seed_input_node_id=seed_input_node_id,
+                    seed_input_field=seed_input_field,
+                    seed_random_min=seed_random_min,
+                    seed_random_max=seed_random_max,
                     output_node_id=output_node_id,
                     output_image_index=output_image_index,
                 )
@@ -746,6 +763,24 @@ class ComfyUIWorkflowPlugin(Star):
         except Exception as e:
             yield event.plain_result(f"读取工作流文件失败：{e}")
             return
+
+        if workflow.seed_randomize and workflow.seed_input_node_id:
+            seed_min = int(workflow.seed_random_min)
+            seed_max = int(workflow.seed_random_max)
+            if seed_min > seed_max:
+                seed_min, seed_max = seed_max, seed_min
+            seed_span = max(0, seed_max - seed_min)
+            seed = seed_min + secrets.randbelow(seed_span + 1)
+            try:
+                self._set_workflow_input(
+                    workflow_json,
+                    node_id=workflow.seed_input_node_id,
+                    field=workflow.seed_input_field,
+                    value=int(seed),
+                )
+            except Exception as e:
+                yield event.plain_result(f"写入随机 seed 失败，请检查 seed_input_node_id / seed_input_field。错误：{e}")
+                return
 
         if prompt is not None and workflow.prompt_input_node_id:
             try:
