@@ -13,7 +13,21 @@ import httpx
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+
+def _find_astrbot_data_dir_from_file(file_path: Path) -> Path:
+    curr = file_path.resolve()
+    if curr.is_file():
+        curr = curr.parent
+
+    while True:
+        if curr.name.lower() == "data":
+            return curr
+        if curr.parent == curr:
+            break
+        curr = curr.parent
+
+    return (Path.cwd() / "data").resolve()
 
 
 @dataclass(frozen=True)
@@ -67,13 +81,13 @@ class ComfyUIClient:
     "0.1.0",
 )
 class ComfyUIWorkflowPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
         super().__init__(context)
-        self.config = config
+        self.config = config or {}
 
-        self._plugin_data_dir = (
-            get_astrbot_data_path() / "plugin_data" / getattr(self, "name", "astrbot_plugin_comfyui_workflow")
-        )
+        plugin_name = getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow"
+        data_root = _find_astrbot_data_dir_from_file(Path(__file__))
+        self._plugin_data_dir = data_root / "plugin_data" / plugin_name
         self._images_dir = self._plugin_data_dir / "images"
         self._images_dir.mkdir(parents=True, exist_ok=True)
 
