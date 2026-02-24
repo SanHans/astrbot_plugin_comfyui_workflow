@@ -1,5 +1,6 @@
 import asyncio
 import copy
+from collections import deque
 import json
 import os
 import re
@@ -53,6 +54,20 @@ def _is_safe_relpath(relpath: str) -> bool:
 
 def _strip_prompt_separators(s: str) -> str:
     return re.sub(r"^[\s：:，,]+", "", (s or "").strip())
+
+
+def _is_command_prefix(s: str) -> bool:
+    if not s:
+        return False
+    return s.startswith("/") or s.startswith("／")
+
+
+def _strip_command_prefix(s: str) -> str:
+    if not s:
+        return ""
+    if s.startswith("/") or s.startswith("／"):
+        return s[1:]
+    return s
 
 
 def _chunk_text(s: str, *, max_len: int = 1800) -> list[str]:
@@ -145,6 +160,8 @@ class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
         super().__init__(context)
         self.config = config or {}
+
+        self._debug_recent_messages: deque[dict[str, Any]] = deque(maxlen=30)
 
         self._plugin_dir = Path(__file__).resolve().parent
 
@@ -289,6 +306,7 @@ class ComfyUIWorkflowPlugin(Star):
                 "workflow_command_aliases_count": len(_WORKFLOW_COMMAND_ALIASES),
                 "workflow_command_aliases_sample": sorted(list(_WORKFLOW_COMMAND_ALIASES))[:80],
                 "discovered_workflow_files": discovered_files,
+                "recent_messages": list(self._debug_recent_messages),
             },
         }
 
@@ -344,7 +362,23 @@ class ComfyUIWorkflowPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_all_message(self, event: AstrMessageEvent):
         msg = (event.message_str or "").strip()
-        if not msg.startswith("/"):
+
+        if bool(self.config.get("debug_enable", False)):
+            try:
+                prefix = msg[:12]
+                cps = [f"U+{ord(ch):04X}" for ch in prefix]
+            except Exception:
+                cps = []
+
+            self._debug_recent_messages.append(
+                {
+                    "ts": int(time.time()),
+                    "message_str": msg,
+                    "prefix_codepoints": cps,
+                }
+            )
+
+        if not _is_command_prefix(msg):
             return
 
         resolved = self._resolve_workflow_from_slash_message(msg)
@@ -478,9 +512,9 @@ class ComfyUIWorkflowPlugin(Star):
         return out
 
     def _resolve_workflow_from_slash_message(self, msg: str) -> tuple[WorkflowSpec, str] | None:
-        if not msg.startswith("/"):
+        if not _is_command_prefix(msg):
             return None
-        rest = msg[1:].lstrip()
+        rest = _strip_command_prefix(msg).lstrip()
         if not rest:
             return None
 
