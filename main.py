@@ -15,6 +15,8 @@ from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
+_WORKFLOW_COMMAND_ALIASES: set[str] = set()
+
 
 def _find_astrbot_data_dir_from_file(file_path: Path) -> Path:
     curr = file_path.resolve()
@@ -138,6 +140,43 @@ class ComfyUIWorkflowPlugin(Star):
         except Exception:
             pass
 
+        self._refresh_workflow_command_aliases()
+
+    def _refresh_workflow_command_aliases(self) -> None:
+        # This is a best-effort optimization:
+        # If AstrBot keeps a reference to alias set, /<command> can be handled as a real command.
+        # If AstrBot copies aliases at registration time, /comfyui run is still available.
+        try:
+            for w in self._get_workflow_specs():
+                _WORKFLOW_COMMAND_ALIASES.add(w.command)
+                _WORKFLOW_COMMAND_ALIASES.update(w.aliases)
+        except Exception:
+            pass
+
+    @filter.command("comfyui_workflow", alias=_WORKFLOW_COMMAND_ALIASES, priority=100)
+    async def comfyui_workflow_entry(self, event: AstrMessageEvent, *words: str):
+        # Dispatch by parsing original message to know which workflow was invoked.
+        msg = (event.message_str or "").strip()
+        resolved = self._resolve_workflow_from_slash_message(msg)
+        if resolved is None:
+            yield event.plain_result("未找到命令对应的工作流，请先执行 /comfyui help 查看可用命令。")
+            return
+
+        workflow, user_prompt = resolved
+        prompt: str | None
+        if workflow.fixed_prompt:
+            prompt = workflow.fixed_prompt
+        else:
+            prompt = user_prompt or None
+
+        if workflow.require_prompt and not prompt:
+            yield event.plain_result(f"用法：/{workflow.command} 你的描述")
+            return
+
+        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
+        async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
+            yield result
+
     @filter.command_group("comfyui", alias={"comfy"})
     def comfyui(self):
         pass
@@ -204,6 +243,8 @@ class ComfyUIWorkflowPlugin(Star):
         except Exception as e:
             yield event.plain_result(f"刷新失败：{e}")
             return
+
+        self._refresh_workflow_command_aliases()
         if not files:
             yield event.plain_result("未发现任何 .json 工作流文件（插件目录或 workflows/）。")
             return
@@ -211,7 +252,7 @@ class ComfyUIWorkflowPlugin(Star):
         suffix = "\n..." if len(files) > 30 else ""
         yield event.plain_result(f"已刷新工作流下拉选项，发现 {len(files)} 个文件：\n{shown}{suffix}\n请刷新 WebUI 配置页面。")
 
-    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=50)
     async def on_all_message(self, event: AstrMessageEvent):
         msg = (event.message_str or "").strip()
         if not msg.startswith("/"):
