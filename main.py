@@ -77,6 +77,43 @@ def _strip_command_prefix(s: str) -> str:
     return s
 
 
+def _guess_raw_text_from_event(event: AstrMessageEvent) -> str | None:
+    """Best-effort: try to recover original user input (may include leading '/')."""
+    try:
+        msg_obj = getattr(event, "message_obj", None)
+        raw = getattr(msg_obj, "raw_message", None)
+    except Exception:
+        raw = None
+
+    candidates: list[Any] = []
+    if raw is not None:
+        candidates.append(raw)
+
+    # Some adapters may store original text at event.message_obj.raw_message.message
+    if isinstance(raw, dict):
+        for k in ("message_str", "message", "raw_message", "text", "content"):
+            v = raw.get(k)
+            if v is not None:
+                candidates.append(v)
+
+    for c in candidates:
+        try:
+            if isinstance(c, str):
+                s = c.strip()
+                if s:
+                    return s
+            if isinstance(c, dict):
+                # Try one more level
+                for k in ("text", "content", "message"):
+                    v = c.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+        except Exception:
+            continue
+
+    return None
+
+
 def _chunk_text(s: str, *, max_len: int = 1800) -> list[str]:
     s = s or ""
     if max_len <= 50:
@@ -281,6 +318,8 @@ class ComfyUIWorkflowPlugin(Star):
         except Exception:
             discovered_files = []
 
+        raw_guess = _guess_raw_text_from_event(event)
+
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
@@ -290,6 +329,7 @@ class ComfyUIWorkflowPlugin(Star):
             },
             "message": {
                 "message_str": event.message_str,
+                "raw_text_guess": raw_guess,
                 "session_id": getattr(event, "session_id", None),
                 "unified_msg_origin": getattr(event, "unified_msg_origin", None),
                 "sender_id": (event.get_sender_id() if hasattr(event, "get_sender_id") else None),
@@ -370,6 +410,10 @@ class ComfyUIWorkflowPlugin(Star):
     async def on_all_message(self, event: AstrMessageEvent):
         msg = (event.message_str or "").strip()
 
+        raw_guess = None
+        if bool(self.config.get("trigger_require_prefix", False)) or bool(self.config.get("debug_enable", False)):
+            raw_guess = _guess_raw_text_from_event(event)
+
         if bool(self.config.get("debug_enable", False)):
             try:
                 prefix = msg[:12]
@@ -381,11 +425,12 @@ class ComfyUIWorkflowPlugin(Star):
                 {
                     "ts": int(time.time()),
                     "message_str": msg,
+                    "raw_text_guess": raw_guess,
                     "prefix_codepoints": cps,
                 }
             )
 
-        resolved = self._resolve_workflow_from_message(msg)
+        resolved = self._resolve_workflow_from_message(msg, raw_guess=raw_guess)
         if resolved is None:
             return
 
@@ -515,7 +560,7 @@ class ComfyUIWorkflowPlugin(Star):
             )
         return out
 
-    def _resolve_workflow_from_message(self, msg: str) -> tuple[WorkflowSpec, str] | None:
+    def _resolve_workflow_from_message(self, msg: str, *, raw_guess: str | None = None) -> tuple[WorkflowSpec, str] | None:
         # Supports:
         # - /<cmd> <prompt>
         # - ／<cmd> <prompt>
@@ -524,6 +569,14 @@ class ComfyUIWorkflowPlugin(Star):
             return None
 
         is_prefixed = _is_command_prefix(msg)
+        if not is_prefixed and raw_guess:
+            # If the adapter stripped the slash in message_str,
+            # we still treat it as prefixed when raw text begins with a slash.
+            is_prefixed = _is_command_prefix(raw_guess)
+
+        if bool(self.config.get("trigger_require_prefix", False)) and not is_prefixed:
+            return None
+
         rest = _strip_command_prefix(msg).lstrip() if is_prefixed else msg
         if not rest:
             return None
