@@ -16,6 +16,8 @@
 
 - `/comfyui run <命令> <提示词>`
 
+注意：你在配置里填写的 `command` 是“动态命令”，不一定会出现在 AstrBot 的“指令管理/管理行为”列表中；请以 `/comfyui help` 输出为准。
+
 ## WebUI 配置
 
 不要在配置页粘贴工作流 JSON。

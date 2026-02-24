@@ -102,7 +102,7 @@ class WorkflowSpec:
     name: str
     command: str
     aliases: frozenset[str]
-    workflow_api_file: str
+    workflow_api_file: str | None
     require_prompt: bool
     fixed_prompt: str | None
     prompt_input_node_id: str | None
@@ -110,7 +110,7 @@ class WorkflowSpec:
     negative_prompt_input_node_id: str | None
     negative_prompt_input_field: str
     default_negative_prompt: str | None
-    output_node_id: str
+    output_node_id: str | None
     output_image_index: int
 
 
@@ -159,7 +159,13 @@ class ComfyUIWorkflowPlugin(Star):
         for w in workflows:
             aliases = sorted(a for a in w.aliases if a != w.command)
             alias_text = f"（别名：{', '.join(aliases)}）" if aliases else ""
-            lines.append(f"- /{w.command} {alias_text}".rstrip())
+            problems: list[str] = []
+            if not w.workflow_api_file:
+                problems.append("未选择工作流文件")
+            if not w.output_node_id:
+                problems.append("未填写 output_node_id")
+            suffix = f"（{', '.join(problems)}）" if problems else ""
+            lines.append(f"- /{w.command} {alias_text}{suffix}".rstrip())
         lines.append("\n管理指令：/comfyui refresh")
         lines.append("备用触发：/comfyui run <命令> <提示词>")
         yield event.plain_result("\n".join(lines))
@@ -307,9 +313,7 @@ class ComfyUIWorkflowPlugin(Star):
                         aliases.add(a_norm)
             aliases.add(command)
 
-            workflow_api_file = (item.get("workflow_api_file") or "").strip()
-            if not workflow_api_file:
-                continue
+            workflow_api_file = (item.get("workflow_api_file") or "").strip() or None
 
             require_prompt = bool(item.get("require_prompt", True))
             fixed_prompt = (item.get("fixed_prompt") or "").strip() or None
@@ -321,9 +325,7 @@ class ComfyUIWorkflowPlugin(Star):
             negative_prompt_input_field = (item.get("negative_prompt_input_field") or "text").strip() or "text"
             default_negative_prompt = (item.get("default_negative_prompt") or "").strip() or None
 
-            output_node_id = (item.get("output_node_id") or "").strip()
-            if not output_node_id:
-                continue
+            output_node_id = (item.get("output_node_id") or "").strip() or None
             output_image_index = int(item.get("output_image_index", 0) or 0)
 
             out.append(
@@ -493,6 +495,14 @@ class ComfyUIWorkflowPlugin(Star):
         comfyui_base_url = (self.config.get("comfyui_base_url") or "").strip()
         if not comfyui_base_url:
             yield event.plain_result("插件未配置 comfyui_base_url，请先在插件配置中填写 ComfyUI 地址。")
+            return
+
+        if not workflow.workflow_api_file:
+            yield event.plain_result(f"工作流『{workflow.name}』未选择 workflow_api_file，请先在插件配置里选择工作流文件。")
+            return
+
+        if not workflow.output_node_id:
+            yield event.plain_result(f"工作流『{workflow.name}』未填写 output_node_id，请先在插件配置里填写输出节点 ID（通常是 SaveImage 节点）。")
             return
 
         try:
