@@ -96,6 +96,12 @@
             "default": 0,
             "invisible": true
           },
+          "obfuscate_output": {
+            "type": "bool",
+            "description": "发送前混淆图片",
+            "hint": "开启后会在发送前对图片像素做可逆混淆（参考 iead：Hilbert/Gilbert 曲线置换 + 固定 offset）。需要解混淆时可用对应工具还原。",
+            "default": false
+          },
           "nlp_enable": {
             "type": "bool",
             "description": "自然语言触发",

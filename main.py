@@ -1,6 +1,8 @@
 import asyncio
 import copy
 from collections import deque
+from array import array
+from io import BytesIO
 import json
 import os
 import re
@@ -12,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover
+    Image = None
 
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
@@ -199,12 +206,14 @@ class WorkflowSpec:
     nlp_prefixes: tuple[str, ...]
     llm_prompt_instruction: str
 
+    obfuscate_output: bool
+
 
 @register(
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.1",
+    "0.2.2",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -331,7 +340,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.1",
+                "version": "0.2.2",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
@@ -613,6 +622,8 @@ class ComfyUIWorkflowPlugin(Star):
             if ("nlp_require_at_bot" not in item):
                 nlp_require_at_bot = global_nlp_require_at
 
+            obfuscate_output = bool(item.get("obfuscate_output", False))
+
             out.append(
                 WorkflowSpec(
                     name=name,
@@ -633,6 +644,8 @@ class ComfyUIWorkflowPlugin(Star):
                     nlp_require_at_bot=nlp_require_at_bot,
                     nlp_prefixes=nlp_prefixes,
                     llm_prompt_instruction=llm_prompt_instruction,
+
+                    obfuscate_output=obfuscate_output,
                 )
             )
         return out
@@ -933,6 +946,12 @@ class ComfyUIWorkflowPlugin(Star):
                 timeout_sec=job_timeout,
             )
             img_bytes = await client.view_image(img_ref)
+            if workflow.obfuscate_output:
+                try:
+                    img_bytes = self._obfuscate_png_bytes(img_bytes)
+                except Exception as e:
+                    yield event.plain_result(f"图片混淆失败：{e}")
+                    return
         except Exception as e:
             yield event.plain_result(f"生成失败: {e}")
             return
@@ -1064,6 +1083,112 @@ class ComfyUIWorkflowPlugin(Star):
             seen.add(t)
             out.append(t)
         return out
+
+    @staticmethod
+    def _gilbert2d_indices(width: int, height: int) -> array:
+        """Generalized Hilbert ('gilbert') curve for width x height.
+
+        Returns linear pixel indices (x + y*width) in visit order.
+        """
+
+        coords = array("I")
+
+        def generate2d(x: int, y: int, ax: int, ay: int, bx: int, by: int) -> None:
+            w = abs(ax + ay)
+            h = abs(bx + by)
+
+            dax = 0 if ax == 0 else (1 if ax > 0 else -1)
+            day = 0 if ay == 0 else (1 if ay > 0 else -1)
+            dbx = 0 if bx == 0 else (1 if bx > 0 else -1)
+            dby = 0 if by == 0 else (1 if by > 0 else -1)
+
+            if h == 1:
+                for _ in range(w):
+                    coords.append(x + y * width)
+                    x += dax
+                    y += day
+                return
+
+            if w == 1:
+                for _ in range(h):
+                    coords.append(x + y * width)
+                    x += dbx
+                    y += dby
+                return
+
+            ax2 = ax // 2
+            ay2 = ay // 2
+            bx2 = bx // 2
+            by2 = by // 2
+
+            w2 = abs(ax2 + ay2)
+            h2 = abs(bx2 + by2)
+
+            if 2 * w > 3 * h:
+                if (w2 % 2) and (w > 2):
+                    ax2 += dax
+                    ay2 += day
+                generate2d(x, y, ax2, ay2, bx, by)
+                generate2d(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by)
+            else:
+                if (h2 % 2) and (h > 2):
+                    bx2 += dbx
+                    by2 += dby
+                generate2d(x, y, bx2, by2, ax2, ay2)
+                generate2d(x + bx2, y + by2, ax, ay, bx - bx2, by - by2)
+                generate2d(
+                    x + (ax - dax) + (bx2 - dbx),
+                    y + (ay - day) + (by2 - dby),
+                    -bx2,
+                    -by2,
+                    -(ax - ax2),
+                    -(ay - ay2),
+                )
+
+        if width >= height:
+            generate2d(0, 0, width, 0, 0, height)
+        else:
+            generate2d(0, 0, 0, height, width, 0)
+
+        return coords
+
+    @staticmethod
+    def _obfuscate_png_bytes(png_bytes: bytes) -> bytes:
+        """Obfuscate image pixels (reversible), like iead encryptImage()."""
+
+        if Image is None:
+            raise RuntimeError("缺少 Pillow，无法进行图片混淆")
+
+        with Image.open(BytesIO(png_bytes)) as im:
+            im = im.convert("RGBA")
+            width, height = im.size
+            if width <= 0 or height <= 0:
+                raise RuntimeError("图片尺寸无效")
+
+            src = im.tobytes()
+            n = width * height
+            curve = ComfyUIWorkflowPlugin._gilbert2d_indices(width, height)
+            if len(curve) != n:
+                raise RuntimeError("曲线长度与像素数量不一致")
+
+            # offset = round(phi * n)
+            offset = int(((5**0.5 - 1) / 2) * n + 0.5)
+
+            src_mv = memoryview(src)
+            dst = bytearray(len(src))
+            dst_mv = memoryview(dst)
+
+            for i in range(n):
+                old_px = curve[i]
+                new_px = curve[(i + offset) % n]
+                op = old_px * 4
+                np = new_px * 4
+                dst_mv[np : np + 4] = src_mv[op : op + 4]
+
+            out = Image.frombytes("RGBA", (width, height), bytes(dst))
+            buf = BytesIO()
+            out.save(buf, format="PNG")
+            return buf.getvalue()
 
     async def _wait_for_output_image(
         self,
