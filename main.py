@@ -213,7 +213,7 @@ class WorkflowSpec:
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.2",
+    "0.2.3",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -340,7 +340,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.2",
+                "version": "0.2.3",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
