@@ -232,10 +232,13 @@ class ComfyUIWorkflowPlugin(Star):
         self._images_dir.mkdir(parents=True, exist_ok=True)
         self._workflows_dir.mkdir(parents=True, exist_ok=True)
 
+        self._schema_sync_error: str | None = None
+        self._schema_sync_last: dict[str, Any] | None = None
+
         try:
             self._sync_workflow_schema()
-        except Exception:
-            pass
+        except Exception as e:
+            self._schema_sync_error = f"{type(e).__name__}: {e}"
 
         self._refresh_workflow_command_aliases()
 
@@ -340,7 +343,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.3",
+                "version": "0.2.4",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
@@ -377,6 +380,8 @@ class ComfyUIWorkflowPlugin(Star):
                 "workflow_command_aliases_sample": sorted(list(_WORKFLOW_COMMAND_ALIASES))[:80],
                 "discovered_workflow_files": discovered_files,
                 "recent_messages": list(self._debug_recent_messages),
+                "schema_sync_error": self._schema_sync_error,
+                "schema_sync_last": self._schema_sync_last,
             },
         }
 
@@ -427,7 +432,18 @@ class ComfyUIWorkflowPlugin(Star):
             return
         shown = "\n".join(f"- {f}" for f in files[:30])
         suffix = "\n..." if len(files) > 30 else ""
-        yield event.plain_result(f"已刷新工作流下拉选项，发现 {len(files)} 个文件：\n{shown}{suffix}\n请刷新 WebUI 配置页面。")
+        sync_info = ""
+        try:
+            if isinstance(self._schema_sync_last, dict):
+                cnt = int(self._schema_sync_last.get("per_entry_templates", 0) or 0)
+                ok = bool(self._schema_sync_last.get("verified", False))
+                sync_info = f"\n折叠标题同步：{('成功' if ok else '未验证')}（条目模板 {cnt} 个）"
+        except Exception:
+            sync_info = ""
+
+        yield event.plain_result(
+            f"已刷新工作流下拉选项，发现 {len(files)} 个文件：\n{shown}{suffix}{sync_info}\n请刷新 WebUI 配置页面。"
+        )
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_all_message(self, event: AstrMessageEvent):
@@ -777,6 +793,7 @@ class ComfyUIWorkflowPlugin(Star):
         cfg_changed = False
         cfg_workflows = self.config.get("workflows")
         keep_template_keys: set[str] = {"workflow"}
+        per_entry_templates: dict[str, str] = {}
         if isinstance(cfg_workflows, list):
             for entry in cfg_workflows:
                 if not isinstance(entry, dict):
@@ -805,6 +822,7 @@ class ComfyUIWorkflowPlugin(Star):
                     tpl_meta["name"] = entry_name
                     tpl_meta["hint"] = "已添加的工作流条目（用于显示标题）"
                     templates[template_key] = tpl_meta
+                    per_entry_templates[template_key] = entry_name
 
         # Prune stale templates left by deleted entries.
         stale_keys = [
@@ -819,6 +837,28 @@ class ComfyUIWorkflowPlugin(Star):
                 pass
 
         schema_path.write_text(json.dumps(schema, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+        # Verify schema actually contains per-entry templates (detect write/override issues).
+        verified = True
+        try:
+            check: dict[str, Any] = json.loads(schema_path.read_text(encoding="utf-8"))
+            tpls = (((check.get("workflows") or {}).get("templates")) or {})
+            for k, expected_name in per_entry_templates.items():
+                meta = tpls.get(k)
+                if not isinstance(meta, dict) or meta.get("name") != expected_name:
+                    verified = False
+                    break
+        except Exception:
+            verified = False
+
+        self._schema_sync_last = {
+            "per_entry_templates": len(per_entry_templates),
+            "verified": verified,
+        }
+        if not verified and per_entry_templates:
+            self._schema_sync_error = "schema 模板写入未生效（可能无写权限或被 AstrBot 覆盖缓存）；请重启 AstrBot 并刷新 WebUI。"
+        else:
+            self._schema_sync_error = None
 
         if cfg_changed:
             save = getattr(self.config, "save_config", None)
