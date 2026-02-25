@@ -213,7 +213,7 @@ class WorkflowSpec:
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.3",
+    "0.2.5",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -225,8 +225,10 @@ class ComfyUIWorkflowPlugin(Star):
         self._plugin_dir = Path(__file__).resolve().parent
 
         plugin_name = getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow"
+        self._plugin_name = plugin_name
         data_root = _find_astrbot_data_dir_from_file(Path(__file__))
         self._plugin_data_dir = data_root / "plugin_data" / plugin_name
+        self._config_path = data_root / "config" / f"{plugin_name}_config.json"
         self._images_dir = self._plugin_data_dir / "images"
         self._workflows_dir = self._plugin_data_dir / "workflows"
         self._images_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +236,7 @@ class ComfyUIWorkflowPlugin(Star):
 
         self._schema_sync_error: str | None = None
         self._schema_sync_last: dict[str, Any] | None = None
+        self._config_sync_last: dict[str, Any] | None = None
 
         try:
             self._sync_workflow_schema()
@@ -343,7 +346,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.4",
+                "version": "0.2.5",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
@@ -382,6 +385,8 @@ class ComfyUIWorkflowPlugin(Star):
                 "recent_messages": list(self._debug_recent_messages),
                 "schema_sync_error": self._schema_sync_error,
                 "schema_sync_last": self._schema_sync_last,
+                "config_path": str(self._config_path),
+                "config_sync_last": self._config_sync_last,
             },
         }
 
@@ -791,7 +796,24 @@ class ComfyUIWorkflowPlugin(Star):
             wf_file["options"] = files
 
         cfg_changed = False
-        cfg_workflows = self.config.get("workflows")
+
+        # Load the latest config from disk (WebUI saves there). Plugin instance config may be stale.
+        config_file_obj: dict[str, Any] | None = None
+        cfg_workflows: Any = None
+        config_loaded_from = "memory"
+        try:
+            if self._config_path.exists() and self._config_path.is_file():
+                config_file_obj = json.loads(self._config_path.read_text(encoding="utf-8"))
+                if isinstance(config_file_obj, dict):
+                    cfg_workflows = config_file_obj.get("workflows")
+                    config_loaded_from = "file"
+        except Exception:
+            config_file_obj = None
+            cfg_workflows = None
+            config_loaded_from = "memory"
+
+        if cfg_workflows is None:
+            cfg_workflows = self.config.get("workflows")
         keep_template_keys: set[str] = {"workflow"}
         per_entry_templates: dict[str, str] = {}
         if isinstance(cfg_workflows, list):
@@ -809,7 +831,7 @@ class ComfyUIWorkflowPlugin(Star):
 
                 # Keep existing template key to avoid breaking UI state.
                 template_key = str(entry.get("__template_key") or "").strip()
-                if not template_key:
+                if not template_key or template_key == "workflow":
                     template_key = f"workflow_{entry_id}"
                     entry["__template_key"] = template_key
                     cfg_changed = True
@@ -823,6 +845,13 @@ class ComfyUIWorkflowPlugin(Star):
                     tpl_meta["hint"] = "已添加的工作流条目（用于显示标题）"
                     templates[template_key] = tpl_meta
                     per_entry_templates[template_key] = entry_name
+
+            # If loaded from disk, mirror back to in-memory config so subsequent logic uses updated keys.
+            if config_loaded_from == "file":
+                try:
+                    self.config["workflows"] = cfg_workflows
+                except Exception:
+                    pass
 
         # Prune stale templates left by deleted entries.
         stale_keys = [
@@ -861,12 +890,40 @@ class ComfyUIWorkflowPlugin(Star):
             self._schema_sync_error = None
 
         if cfg_changed:
+            saved = False
+
+            # Preferred: AstrBot config object saver
             save = getattr(self.config, "save_config", None)
             if callable(save):
                 try:
                     save()
+                    saved = True
                 except Exception:
-                    pass
+                    saved = False
+
+            # Fallback: write directly to data/config/<plugin>_config.json
+            if not saved and isinstance(config_file_obj, dict) and config_loaded_from == "file":
+                try:
+                    config_file_obj["workflows"] = cfg_workflows
+                    self._config_path.write_text(
+                        json.dumps(config_file_obj, ensure_ascii=True, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    saved = True
+                except Exception:
+                    saved = False
+
+            self._config_sync_last = {
+                "changed": True,
+                "saved": saved,
+                "loaded_from": config_loaded_from,
+            }
+        else:
+            self._config_sync_last = {
+                "changed": False,
+                "saved": None,
+                "loaded_from": config_loaded_from,
+            }
 
         return files
 
