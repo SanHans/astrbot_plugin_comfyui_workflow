@@ -194,12 +194,17 @@ class WorkflowSpec:
     output_node_id: str | None
     output_image_index: int
 
+    nlp_enable: bool
+    nlp_require_at_bot: bool
+    nlp_prefixes: tuple[str, ...]
+    llm_prompt_instruction: str
+
 
 @register(
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.0",
+    "0.2.1",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -326,7 +331,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.0",
+                "version": "0.2.1",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
@@ -351,6 +356,10 @@ class ComfyUIWorkflowPlugin(Star):
                     "negative_prompt_input_node_id": w.negative_prompt_input_node_id,
                     "seed_randomize": w.seed_randomize,
                     "seed_input_node_id": w.seed_input_node_id,
+                    "nlp_enable": w.nlp_enable,
+                    "nlp_require_at_bot": w.nlp_require_at_bot,
+                    "nlp_prefixes": list(w.nlp_prefixes),
+                    "llm_prompt_instruction_len": len(w.llm_prompt_instruction or ""),
                 }
                 for w in specs
             ],
@@ -458,21 +467,27 @@ class ComfyUIWorkflowPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def nlp_draw(self, event: AstrMessageEvent):
-        if not bool(self.config.get("enable_nlp_draw", True)):
-            return
-
-        if bool(self.config.get("nlp_require_at_bot", True)) and not self._is_at_bot(event):
-            return
-
         msg = (event.message_str or "").strip()
-        prefixes: list[str] = self.config.get("nlp_draw_prefixes") or []
-        prefixes = [p.strip() for p in prefixes if (p or "").strip()]
-        if not prefixes:
+        workflows = [w for w in self._get_workflow_specs() if w.nlp_enable]
+        if not workflows:
             return
 
-        prefix = next((p for p in prefixes if msg.startswith(p)), None)
-        if not prefix:
+        at_bot = self._is_at_bot(event)
+        best: tuple[int, WorkflowSpec, str] | None = None
+        for w in workflows:
+            if w.nlp_require_at_bot and not at_bot:
+                continue
+            for p in w.nlp_prefixes:
+                if not p:
+                    continue
+                if msg.startswith(p):
+                    if best is None or len(p) > best[0]:
+                        best = (len(p), w, p)
+
+        if best is None:
             return
+
+        _, workflow, prefix = best
 
         raw_req = msg[len(prefix) :].strip()
         raw_req = re.sub(r"^[：:，,\s]+", "", raw_req)
@@ -481,12 +496,12 @@ class ComfyUIWorkflowPlugin(Star):
 
         event.stop_event()
 
-        instruction = (self.config.get("llm_prompt_instruction") or "").strip()
+        instruction = (workflow.llm_prompt_instruction or "").strip()
         prompt = ""
         try:
             provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
             if provider_id:
-                llm_prompt = f"{instruction}\n\n用户需求：{raw_req}"
+                llm_prompt = f"{instruction}\n\n用户需求：{raw_req}" if instruction else raw_req
                 llm_resp = await self.context.llm_generate(chat_provider_id=provider_id, prompt=llm_prompt)
                 prompt = (llm_resp.completion_text or "").strip()
                 prompt = re.sub(r"^```.*?\n|```$", "", prompt, flags=re.DOTALL).strip()
@@ -498,14 +513,6 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result("未能获取 AI 润色提示词，已使用原描述继续绘图。")
         else:
             yield event.plain_result(f"已为你整理提示词并开始绘制：{prompt}")
-
-        target_cmd = _normalize_cmd(self.config.get("nlp_target_command") or "")
-        workflow = self._find_workflow_by_command(target_cmd) if target_cmd else None
-        if workflow is None:
-            workflow = self._get_workflow_specs()[0] if self._get_workflow_specs() else None
-        if workflow is None:
-            yield event.plain_result("尚未配置任何工作流，无法执行绘图。")
-            return
 
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
@@ -543,6 +550,16 @@ class ComfyUIWorkflowPlugin(Star):
         if not isinstance(raw, list):
             return []
 
+        # Backward compatible global NLP settings (deprecated in schema)
+        global_nlp_enable = bool(self.config.get("enable_nlp_draw", True))
+        global_nlp_prefixes = self.config.get("nlp_draw_prefixes") or []
+        if not isinstance(global_nlp_prefixes, list):
+            global_nlp_prefixes = []
+        global_nlp_prefixes = [str(p).strip() for p in global_nlp_prefixes if str(p).strip()]
+        global_nlp_instruction = (self.config.get("llm_prompt_instruction") or "").strip()
+        global_nlp_target = _normalize_cmd(self.config.get("nlp_target_command") or "")
+        global_nlp_require_at = bool(self.config.get("nlp_require_at_bot", True))
+
         out: list[WorkflowSpec] = []
         for item in raw:
             if not isinstance(item, dict):
@@ -578,6 +595,24 @@ class ComfyUIWorkflowPlugin(Star):
             output_node_id = (item.get("output_node_id") or "").strip() or None
             output_image_index = int(item.get("output_image_index", 0) or 0)
 
+            nlp_enable = bool(item.get("nlp_enable", False))
+            nlp_require_at_bot = bool(item.get("nlp_require_at_bot", True))
+            nlp_prefixes_raw = item.get("nlp_prefixes") or []
+            if not isinstance(nlp_prefixes_raw, list):
+                nlp_prefixes_raw = []
+            nlp_prefixes = tuple(str(p).strip() for p in nlp_prefixes_raw if str(p).strip())
+            llm_prompt_instruction = (item.get("llm_prompt_instruction") or "").strip()
+
+            # Old behavior: enable NLP for a target command
+            if ("nlp_enable" not in item) and global_nlp_enable and global_nlp_target and command == global_nlp_target:
+                nlp_enable = True
+            if ("nlp_prefixes" not in item) and global_nlp_prefixes:
+                nlp_prefixes = tuple(global_nlp_prefixes)
+            if ("llm_prompt_instruction" not in item) and global_nlp_instruction:
+                llm_prompt_instruction = global_nlp_instruction
+            if ("nlp_require_at_bot" not in item):
+                nlp_require_at_bot = global_nlp_require_at
+
             out.append(
                 WorkflowSpec(
                     name=name,
@@ -593,6 +628,11 @@ class ComfyUIWorkflowPlugin(Star):
                     seed_input_node_id=seed_input_node_id,
                     output_node_id=output_node_id,
                     output_image_index=output_image_index,
+
+                    nlp_enable=nlp_enable,
+                    nlp_require_at_bot=nlp_require_at_bot,
+                    nlp_prefixes=nlp_prefixes,
+                    llm_prompt_instruction=llm_prompt_instruction,
                 )
             )
         return out

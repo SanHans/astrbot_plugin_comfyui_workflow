@@ -1,0 +1,19 @@
+# 更新日志
+
+## v0.2.1
+
+- 自然语言触发与 AI 提示词改写改为按工作流条目配置（每条工作流可独立开关、前缀、改写指令、是否必须 @ 机器人）
+
+## v0.2.0
+
+- 工作流配置改为选择插件目录/持久化目录中的 API JSON 文件，不再在配置页粘贴 JSON
+- 支持按工作流配置命令/别名、节点 ID 等；新增 `/comfyui help`、`/comfyui refresh`、`/comfyui run`
+- 修复部分平台吞掉 `/` 导致命令不触发的问题（兼容纯命令触发）
+- 增加调试模式 `/comfyui debug`
+- 解决 ComfyUI 节点缓存导致重复出图：随机化所有含 `seed/noise_seed` 的节点输入
+- 群聊回图支持 @ 触发者（平台支持时）
+- 工作流文件推荐放入 `data/plugin_data/astrbot_plugin_comfyui_workflow/workflows/` 防止更新丢失
+
+## v0.1.1
+
+- 初始版本

@@ -95,6 +95,30 @@
             "hint": "已固定为 0（第 1 张）。此项保留仅用于兼容旧配置，不会出现在配置页。",
             "default": 0,
             "invisible": true
+          },
+          "nlp_enable": {
+            "type": "bool",
+            "description": "自然语言触发",
+            "hint": "开启后在群聊中可用自然语言前缀触发该工作流（建议配合‘需@机器人’）。",
+            "default": false
+          },
+          "nlp_require_at_bot": {
+            "type": "bool",
+            "description": "自然语言需@机器人（群聊）",
+            "hint": "开启后仅当消息中 @ 机器人时，才会触发该条目的自然语言绘图。",
+            "default": true
+          },
+          "nlp_prefixes": {
+            "type": "list",
+            "description": "自然语言触发前缀",
+            "hint": "例如：[\"帮我画\", \"给我画\"]。命中后会截取前缀后的内容作为用户需求。",
+            "default": ["帮我画", "给我画", "帮我生成", "画一张"]
+          },
+          "llm_prompt_instruction": {
+            "type": "text",
+            "description": "AI 提示词改写指令",
+            "hint": "为空则不改写，直接使用用户原始描述。",
+            "default": "你是 ComfyUI 绘图提示词助手。请把用户需求改写为适合 Stable Diffusion / Flux 的高质量正向提示词，尽量使用英文关键词并保留主体、画风、构图、光影和细节要求。只输出一行提示词，不要解释，不要 Markdown，不要引号。"
           }
         }
       }
@@ -102,9 +126,10 @@
   },
   "nlp_target_command": {
     "type": "string",
-    "description": "自然语言触发使用的命令",
-    "hint": "群聊触发（如：帮我画xxx）时，实际调用哪个 /<命令>。",
-    "default": "画图"
+    "description": "自然语言触发使用的命令（已废弃）",
+    "hint": "已迁移到每个工作流条目：nlp_enable/nlp_prefixes。保留仅兼容旧配置。",
+    "default": "画图",
+    "invisible": true
   },
   "poll_interval_sec": {
     "type": "float",
@@ -131,9 +156,10 @@
   },
   "nlp_require_at_bot": {
     "type": "bool",
-    "description": "自然语言需@机器人（群聊）",
-    "hint": "开启后群聊自然语言触发仅在消息中 @ 机器人时生效，避免误触发。",
-    "default": true
+    "description": "自然语言需@机器人（群聊，已废弃）",
+    "hint": "已迁移到每个工作流条目：nlp_require_at_bot。保留仅兼容旧配置。",
+    "default": true,
+    "invisible": true
   },
   "job_timeout_sec": {
     "type": "int",
@@ -148,18 +174,23 @@
   },
   "enable_nlp_draw": {
     "type": "bool",
-    "description": "启用自然语言触发（如：帮我画xxx）",
-    "default": true
+    "description": "启用自然语言触发（已废弃）",
+    "hint": "已迁移到每个工作流条目：nlp_enable。保留仅兼容旧配置。",
+    "default": true,
+    "invisible": true
   },
   "nlp_draw_prefixes": {
     "type": "list",
-    "description": "自然语言触发前缀",
-    "hint": "群消息以这些前缀开头时触发绘图。",
-    "default": ["帮我画", "给我画", "帮我生成", "画一张"]
+    "description": "自然语言触发前缀（已废弃）",
+    "hint": "已迁移到每个工作流条目：nlp_prefixes。保留仅兼容旧配置。",
+    "default": ["帮我画", "给我画", "帮我生成", "画一张"],
+    "invisible": true
   },
   "llm_prompt_instruction": {
     "type": "text",
-    "description": "AI 提示词改写指令",
-    "default": "你是 ComfyUI 绘图提示词助手。请把用户需求改写为适合 Stable Diffusion / Flux 的高质量正向提示词，尽量使用英文关键词并保留主体、画风、构图、光影和细节要求。只输出一行提示词，不要解释，不要 Markdown，不要引号。"
+    "description": "AI 提示词改写指令（已废弃）",
+    "hint": "已迁移到每个工作流条目：llm_prompt_instruction。保留仅兼容旧配置。",
+    "default": "你是 ComfyUI 绘图提示词助手。请把用户需求改写为适合 Stable Diffusion / Flux 的高质量正向提示词，尽量使用英文关键词并保留主体、画风、构图、光影和细节要求。只输出一行提示词，不要解释，不要 Markdown，不要引号。",
+    "invisible": true
   }
 }
