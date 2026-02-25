@@ -172,6 +172,15 @@ class ComfyUIClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def get_queue(self, timeout_sec: float = 15) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=timeout_sec) as client:
+            resp = await client.get("/queue")
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError("/queue 返回不是对象")
+            return data
+
     async def view_image(self, ref: ComfyUIImageRef, timeout_sec: float = 60) -> bytes:
         params: dict[str, str] = {"filename": ref.filename}
         if ref.subfolder:
@@ -213,7 +222,7 @@ class WorkflowSpec:
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.5",
+    "0.2.6",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -282,7 +291,6 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result(f"用法：/{workflow.command} 你的描述")
             return
 
-        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
 
@@ -346,7 +354,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.5",
+                "version": "0.2.6",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
@@ -419,7 +427,6 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result(f"用法：/{workflow.command} 你的描述")
             return
 
-        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
 
@@ -491,7 +498,6 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result(f"用法：/{workflow.command} 你的描述")
             return
 
-        yield event.plain_result("已收到绘图请求，正在生成，请稍等...")
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
 
@@ -1026,6 +1032,28 @@ class ComfyUIWorkflowPlugin(Star):
                 return
 
         client = ComfyUIClient(comfyui_base_url)
+
+        # Ack + queue position (best-effort)
+        ahead_text = ""
+        try:
+            q = await client.get_queue()
+            running = q.get("queue_running")
+            pending = q.get("queue_pending")
+
+            ahead = 0
+            if isinstance(running, list):
+                ahead += len(running)
+            if isinstance(pending, list):
+                ahead += len(pending)
+
+            if ahead <= 0:
+                ahead_text = "（当前队列空闲）"
+            else:
+                ahead_text = f"（队列前方还有 {ahead} 个任务）"
+        except Exception:
+            ahead_text = ""
+
+        yield event.plain_result(f"已收到绘图请求，正在生成，请稍等...{ahead_text}")
         poll_interval = float(self.config.get("poll_interval_sec", 1.0))
         job_timeout = int(self.config.get("job_timeout_sec", 180))
         image_index = int(workflow.output_image_index)
