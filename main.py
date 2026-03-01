@@ -153,11 +153,20 @@ class ComfyUIClient:
         self._base_url = base_url.rstrip("/")
         self._client_id = str(uuid.uuid4())
 
-    async def queue_prompt(self, workflow: dict[str, Any], timeout_sec: float = 30) -> str:
+    async def queue_prompt(
+        self,
+        workflow: dict[str, Any],
+        timeout_sec: float = 30,
+        *,
+        extra_data: dict[str, Any] | None = None,
+    ) -> str:
         async with httpx.AsyncClient(base_url=self._base_url, timeout=timeout_sec) as client:
+            payload: dict[str, Any] = {"prompt": workflow, "client_id": self._client_id}
+            if extra_data:
+                payload["extra_data"] = extra_data
             resp = await client.post(
                 "/prompt",
-                json={"prompt": workflow, "client_id": self._client_id},
+                json=payload,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -222,7 +231,7 @@ class WorkflowSpec:
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.6",
+    "0.2.7",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -240,12 +249,16 @@ class ComfyUIWorkflowPlugin(Star):
         self._config_path = data_root / "config" / f"{plugin_name}_config.json"
         self._images_dir = self._plugin_data_dir / "images"
         self._workflows_dir = self._plugin_data_dir / "workflows"
+        self._whitelist_groups_path = self._plugin_data_dir / "whitelist_groups.json"
         self._images_dir.mkdir(parents=True, exist_ok=True)
         self._workflows_dir.mkdir(parents=True, exist_ok=True)
 
         self._schema_sync_error: str | None = None
         self._schema_sync_last: dict[str, Any] | None = None
         self._config_sync_last: dict[str, Any] | None = None
+
+        self._whitelist_lock = asyncio.Lock()
+        self._user_locks: dict[str, asyncio.Lock] = {}
 
         try:
             self._sync_workflow_schema()
@@ -324,7 +337,38 @@ class ComfyUIWorkflowPlugin(Star):
             lines.append(f"- /{w.command} {alias_text}{suffix}".rstrip())
         lines.append("\n管理指令：/comfyui refresh")
         lines.append("备用触发：/comfyui run <命令> <提示词>")
+        lines.append("白名单（群聊，管理员）：/comfyui whitelist on|off|status")
         yield event.plain_result("\n".join(lines))
+
+    @comfyui.command("whitelist")
+    async def comfyui_whitelist(self, event: AstrMessageEvent, action: str | None = None):
+        group_id = self._get_group_id(event)
+        if not group_id:
+            yield event.plain_result("该指令仅在群聊中可用。")
+            return
+
+        sender_id = self._get_sender_id(event)
+        if not self._is_admin(sender_id):
+            yield event.plain_result("无权限：仅管理员可操作群白名单开关。")
+            return
+
+        act = (action or "").strip().casefold()
+        if act in {"", "status", "查看"}:
+            enabled = await self._get_group_whitelist_enabled(group_id)
+            yield event.plain_result(f"本群白名单：{('已开启' if enabled else '已关闭')}（group_id={group_id}）")
+            return
+
+        if act in {"on", "enable", "开启"}:
+            await self._set_group_whitelist_enabled(group_id, True)
+            yield event.plain_result(f"已开启本群白名单（group_id={group_id}）。")
+            return
+
+        if act in {"off", "disable", "关闭"}:
+            await self._set_group_whitelist_enabled(group_id, False)
+            yield event.plain_result(f"已关闭本群白名单（group_id={group_id}）。")
+            return
+
+        yield event.plain_result("用法：/comfyui whitelist on|off|status")
 
     @comfyui.command("debug")
     async def comfyui_debug(self, event: AstrMessageEvent):
@@ -354,7 +398,7 @@ class ComfyUIWorkflowPlugin(Star):
         debug = {
             "plugin": {
                 "name": getattr(self, "name", None) or "astrbot_plugin_comfyui_workflow",
-                "version": "0.2.6",
+                "version": "0.2.7",
                 "plugin_dir": str(self._plugin_dir),
                 "plugin_data_dir": str(self._plugin_data_dir),
             },
@@ -1033,6 +1077,22 @@ class ComfyUIWorkflowPlugin(Star):
 
         client = ComfyUIClient(comfyui_base_url)
 
+        sender_id = self._get_sender_id(event)
+        group_id = self._get_group_id(event)
+
+        if group_id:
+            allowed, reason = await self._check_group_whitelist(sender_id=sender_id, group_id=group_id)
+            if not allowed:
+                yield event.plain_result(reason)
+                return
+
+        user_lock = self._get_user_lock(sender_id)
+        async with user_lock:
+            allowed, reason = await self._check_user_job_limit(sender_id=sender_id, client=client)
+            if not allowed:
+                yield event.plain_result(reason)
+                return
+
         # Ack + queue position (best-effort)
         ahead_text = ""
         try:
@@ -1061,7 +1121,14 @@ class ComfyUIWorkflowPlugin(Star):
         image_index = 0
 
         try:
-            prompt_id = await client.queue_prompt(workflow_json)
+            extra_data = {
+                "astrbot_plugin": "astrbot_plugin_comfyui_workflow",
+                "astrbot_sender_id": sender_id,
+            }
+            if group_id:
+                extra_data["astrbot_group_id"] = group_id
+
+            prompt_id = await client.queue_prompt(workflow_json, extra_data=extra_data)
             img_ref = await self._wait_for_output_image(
                 client=client,
                 prompt_id=prompt_id,
@@ -1102,6 +1169,137 @@ class ComfyUIWorkflowPlugin(Star):
                 return
 
         yield event.image_result(str(out_path))
+
+    def _get_sender_id(self, event: AstrMessageEvent) -> str:
+        try:
+            sid = event.get_sender_id() if hasattr(event, "get_sender_id") else None
+            return str(sid or "").strip() or "unknown"
+        except Exception:
+            return "unknown"
+
+    def _get_group_id(self, event: AstrMessageEvent) -> str | None:
+        try:
+            msg_obj = getattr(event, "message_obj", None)
+            if msg_obj is None:
+                return None
+            gid = getattr(msg_obj, "group_id", None)
+            gid = str(gid or "").strip()
+            return gid or None
+        except Exception:
+            return None
+
+    def _is_admin(self, sender_id: str) -> bool:
+        admins = self.config.get("admins") or []
+        if not isinstance(admins, list):
+            return False
+        sid = str(sender_id or "").strip()
+        return bool(sid) and any(str(a).strip() == sid for a in admins)
+
+    def _is_whitelisted_user(self, sender_id: str) -> bool:
+        users = self.config.get("whitelist_users") or []
+        if not isinstance(users, list):
+            return False
+        sid = str(sender_id or "").strip()
+        return bool(sid) and any(str(a).strip() == sid for a in users)
+
+    async def _load_whitelist_groups(self) -> dict[str, bool]:
+        async with self._whitelist_lock:
+            if not self._whitelist_groups_path.exists():
+                return {}
+            try:
+                data = json.loads(self._whitelist_groups_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    return {}
+                out: dict[str, bool] = {}
+                for k, v in data.items():
+                    kk = str(k).strip()
+                    if not kk:
+                        continue
+                    out[kk] = bool(v)
+                return out
+            except Exception:
+                return {}
+
+    async def _save_whitelist_groups(self, groups: dict[str, bool]) -> None:
+        async with self._whitelist_lock:
+            self._whitelist_groups_path.write_text(
+                json.dumps(groups, ensure_ascii=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    async def _get_group_whitelist_enabled(self, group_id: str) -> bool:
+        gid = str(group_id or "").strip()
+        if not gid:
+            return False
+        groups = await self._load_whitelist_groups()
+        if gid in groups:
+            return bool(groups[gid])
+        return bool(self.config.get("whitelist_default_enabled", False))
+
+    async def _set_group_whitelist_enabled(self, group_id: str, enabled: bool) -> None:
+        gid = str(group_id or "").strip()
+        if not gid:
+            return
+        groups = await self._load_whitelist_groups()
+        groups[gid] = bool(enabled)
+        await self._save_whitelist_groups(groups)
+
+    async def _check_group_whitelist(self, *, sender_id: str, group_id: str) -> tuple[bool, str]:
+        enabled = await self._get_group_whitelist_enabled(group_id)
+        if not enabled:
+            return True, ""
+        if self._is_admin(sender_id):
+            return True, ""
+        if self._is_whitelisted_user(sender_id):
+            return True, ""
+        return False, "本群已开启白名单：你不在白名单中，无法使用绘图功能。"
+
+    def _get_user_lock(self, sender_id: str) -> asyncio.Lock:
+        sid = str(sender_id or "").strip() or "unknown"
+        lock = self._user_locks.get(sid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_locks[sid] = lock
+        return lock
+
+    async def _check_user_job_limit(self, *, sender_id: str, client: ComfyUIClient) -> tuple[bool, str]:
+        limit = int(self.config.get("max_jobs_per_user", 3) or 0)
+        if limit <= 0:
+            return True, ""
+
+        sid = str(sender_id or "").strip() or "unknown"
+        try:
+            q = await client.get_queue()
+        except Exception:
+            # If we can't read queue, do not block.
+            return True, ""
+
+        def count(items: Any) -> int:
+            if not isinstance(items, list):
+                return 0
+            c = 0
+            for it in items:
+                try:
+                    if not isinstance(it, list) or len(it) < 4:
+                        continue
+                    extra = it[3]
+                    if not isinstance(extra, dict):
+                        continue
+                    if extra.get("astrbot_plugin") != "astrbot_plugin_comfyui_workflow":
+                        continue
+                    if str(extra.get("astrbot_sender_id") or "").strip() != sid:
+                        continue
+                    c += 1
+                except Exception:
+                    continue
+            return c
+
+        running = count(q.get("queue_running"))
+        pending = count(q.get("queue_pending"))
+        total = running + pending
+        if total >= limit:
+            return False, f"你当前已有 {total} 个任务在排队/执行中（上限 {limit}），请稍后再试。"
+        return True, ""
 
     def _should_at_sender(self, event: AstrMessageEvent) -> bool:
         if not bool(self.config.get("reply_at_sender", True)):

@@ -143,6 +143,30 @@
     "description": "轮询间隔（秒）",
     "default": 1.0
   },
+  "max_jobs_per_user": {
+    "type": "int",
+    "description": "每人最大并发任务数",
+    "hint": "同一 sender_id 在 ComfyUI 队列中最多允许同时存在多少个由本插件提交的任务（含排队与执行中）。0 表示不限制。",
+    "default": 3
+  },
+  "admins": {
+    "type": "list",
+    "description": "管理员 sender_id",
+    "hint": "管理员可在群聊使用 /comfyui whitelist on|off|status 开关白名单，且白名单开启时管理员自动放行。",
+    "default": []
+  },
+  "whitelist_users": {
+    "type": "list",
+    "description": "白名单 sender_id",
+    "hint": "仅在群聊白名单开启时生效：只有在此列表或管理员列表中的用户才允许触发绘图。",
+    "default": []
+  },
+  "whitelist_default_enabled": {
+    "type": "bool",
+    "description": "群白名单默认开启",
+    "hint": "某个群从未设置过白名单开关时，默认是否开启（仅群聊有效）。",
+    "default": false
+  },
   "debug_enable": {
     "type": "bool",
     "description": "调试模式",
