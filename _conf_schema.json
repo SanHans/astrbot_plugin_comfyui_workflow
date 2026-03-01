@@ -8,7 +8,7 @@
   "workflows": {
     "type": "template_list",
     "description": "工作流/节点/命令",
-    "hint": "把 ComfyUI 导出的 API format JSON 文件放到插件目录或 workflows/ 目录；然后在这里选择文件，并为每个工作流配置节点 ID 与触发命令。新增文件后可重载插件或用 /comfyui refresh 刷新下拉选项。",
+    "hint": "把 ComfyUI 导出的 API format JSON 文件放到插件目录或 workflows/ 目录；然后在这里选择文件，并为每个工作流配置节点 ID 与触发命令。新增文件后可重载插件或用 /aimg refresh 刷新下拉选项。",
     "templates": {
       "workflow": {
         "name": "新条目",
@@ -22,7 +22,7 @@
           "name": {
             "type": "string",
             "description": "显示名称",
-            "hint": "用于显示在折叠标题中。修改后可执行 /comfyui refresh 或重载插件后刷新 WebUI 使标题更新。",
+            "hint": "用于显示在折叠标题中。修改后可执行 /aimg refresh 或重载插件后刷新 WebUI 使标题更新。",
             "default": "新条目"
           },
           "command": {
@@ -152,7 +152,7 @@
   "admins": {
     "type": "list",
     "description": "管理员 sender_id",
-    "hint": "管理员可在群聊使用 /comfyui whitelist on|off|status 开关白名单，且白名单开启时管理员自动放行。",
+    "hint": "管理员可在群聊使用 /aimg whitelist on|off|status 开关白名单，且白名单开启时管理员自动放行。",
     "default": []
   },
   "whitelist_users": {
@@ -170,7 +170,7 @@
   "debug_enable": {
     "type": "bool",
     "description": "调试模式",
-    "hint": "开启后允许使用 /comfyui debug 输出当前插件配置与解析信息（请勿在公开群聊中开启/使用）。",
+    "hint": "开启后允许使用 /aimg debug 输出当前插件配置与解析信息（请勿在公开群聊中开启/使用）。",
     "default": false
   },
   "trigger_require_prefix": {

@@ -1,7 +1,7 @@
 name: astrbot_plugin_comfyui_workflow
 display_name: ComfyUI 工作流
 author: you
-version: v0.2.7
+version: v0.2.8
 description: "对接 ComfyUI 工作流并返回生成图片"
 
 # AstrBot Plugin Market metadata

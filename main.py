@@ -231,7 +231,7 @@ class WorkflowSpec:
     "astrbot_plugin_comfyui_workflow",
     "you",
     "对接 ComfyUI 工作流并返回图片",
-    "0.2.7",
+    "0.2.8",
 )
 class ComfyUIWorkflowPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None, *args, **kwargs):
@@ -285,11 +285,11 @@ class ComfyUIWorkflowPlugin(Star):
 
         # Dispatch by parsing original message to know which workflow was invoked.
         msg = (event.message_str or "").strip()
-        resolved = self._resolve_workflow_from_slash_message(msg)
+        resolved = self._resolve_workflow_from_message(msg)
         if resolved is None:
             yield event.plain_result(
                 "这个指令入口用于工作流命令别名分发。\n"
-                "请使用 /comfyui help 查看可用命令，或使用备用触发：/comfyui run <命令> <提示词>"
+                "请使用 /aimg help 查看可用命令，或使用备用触发：/aimg run <命令> <提示词>"
             )
             return
 
@@ -307,12 +307,12 @@ class ComfyUIWorkflowPlugin(Star):
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
 
-    @filter.command_group("comfyui", alias={"comfy"})
-    def comfyui(self):
+    @filter.command_group("aimg", alias={"comfyui", "comfy"})
+    def aimg(self):
         pass
 
-    @comfyui.command("help")
-    async def comfyui_help(self, event: AstrMessageEvent):
+    @aimg.command("help")
+    async def aimg_help(self, event: AstrMessageEvent):
         workflows = self._get_workflow_specs()
         if not workflows:
             yield event.plain_result(
@@ -320,7 +320,7 @@ class ComfyUIWorkflowPlugin(Star):
                 "1) 把 ComfyUI 导出的 API JSON 放到插件目录或 workflows/\n"
                 "2) 在 WebUI 插件配置里新增一条‘工作流’配置\n"
                 "3) 选择文件并填写 output_node_id\n"
-                "新增文件后可执行：/comfyui refresh"
+                "新增文件后可执行：/aimg refresh"
             )
             return
 
@@ -335,13 +335,14 @@ class ComfyUIWorkflowPlugin(Star):
                 problems.append("未填写 output_node_id")
             suffix = f"（{', '.join(problems)}）" if problems else ""
             lines.append(f"- /{w.command} {alias_text}{suffix}".rstrip())
-        lines.append("\n管理指令：/comfyui refresh")
-        lines.append("备用触发：/comfyui run <命令> <提示词>")
-        lines.append("白名单（群聊，管理员）：/comfyui whitelist on|off|status")
+        lines.append("\n管理指令：/aimg refresh")
+        lines.append("备用触发：/aimg run <命令> <提示词>")
+        lines.append("白名单（群聊，管理员）：/aimg whitelist on|off|status")
+        lines.append("兼容别名：/comfyui ...")
         yield event.plain_result("\n".join(lines))
 
-    @comfyui.command("whitelist")
-    async def comfyui_whitelist(self, event: AstrMessageEvent, action: str | None = None):
+    @aimg.command("whitelist")
+    async def aimg_whitelist(self, event: AstrMessageEvent, action: str | None = None):
         group_id = self._get_group_id(event)
         if not group_id:
             yield event.plain_result("该指令仅在群聊中可用。")
@@ -368,12 +369,12 @@ class ComfyUIWorkflowPlugin(Star):
             yield event.plain_result(f"已关闭本群白名单（group_id={group_id}）。")
             return
 
-        yield event.plain_result("用法：/comfyui whitelist on|off|status")
+        yield event.plain_result("用法：/aimg whitelist on|off|status")
 
-    @comfyui.command("debug")
-    async def comfyui_debug(self, event: AstrMessageEvent):
+    @aimg.command("debug")
+    async def aimg_debug(self, event: AstrMessageEvent):
         if not bool(self.config.get("debug_enable", False)):
-            yield event.plain_result("调试模式未开启：请在插件配置中开启 debug_enable 后再使用 /comfyui debug。")
+            yield event.plain_result("调试模式未开启：请在插件配置中开启 debug_enable 后再使用 /aimg debug。")
             return
 
         try:
@@ -448,11 +449,11 @@ class ComfyUIWorkflowPlugin(Star):
             prefix = f"[DEBUG {idx}/{total}]\n" if total > 1 else ""
             yield event.plain_result(prefix + chunk)
 
-    @comfyui.command("run")
-    async def comfyui_run(self, event: AstrMessageEvent, command: str | None = None, *words: str):
+    @aimg.command("run")
+    async def aimg_run(self, event: AstrMessageEvent, command: str | None = None, *words: str):
         cmd = _normalize_cmd(command or "")
         if not cmd:
-            yield event.plain_result("用法：/comfyui run <命令> <提示词>\n示例：/comfyui run 画图 一只戴墨镜的橘猫")
+            yield event.plain_result("用法：/aimg run <命令> <提示词>\n示例：/aimg run 画图 一只戴墨镜的橘猫")
             return
 
         workflow = self._find_workflow_by_command(cmd)
@@ -474,8 +475,8 @@ class ComfyUIWorkflowPlugin(Star):
         async for result in self._run_workflow(event=event, workflow=workflow, prompt=prompt):
             yield result
 
-    @comfyui.command("refresh")
-    async def comfyui_refresh(self, event: AstrMessageEvent):
+    @aimg.command("refresh")
+    async def aimg_refresh(self, event: AstrMessageEvent):
         try:
             files = self._sync_workflow_schema()
         except Exception as e:
